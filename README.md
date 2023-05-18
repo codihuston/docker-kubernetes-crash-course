@@ -63,6 +63,7 @@ comes secondary to the experience that is intended to be gained here.
   - [Initializing the API Application](#initializing-the-api-application)
   - [Dockerizing the API](#dockerizing-the-api)
   - [Adding the Database Layer](#adding-the-database-layer)
+  - [Fix Broken Imports in VSCode](#fix-broken-imports-in-vscode)
 
 ## How to Use
 
@@ -1066,4 +1067,28 @@ Key takeaways:
   well in its current state, because the code is not quite testable. We will
   expand on what that means and how to fix that with encapsulation in a later
   section
+
+## Fix Broken Imports in VSCode
+
+Open [./api/main.go](./api/main.go).
+
+If you are in VSCode and your editor is complaining about broken imports, first
+be sure to install the golang dependencies on your workstation (outside of
+the container).
+
+```
+$ cd api
+$ go mod download
+```
+
+Then restart your golang language server
+`(CMD + SHIFT + P > Go: Restart Language Server)` (CTRL on Windows).
+
+> Note: you can may be able away with mounting your GOROOT and GOPATH to your
+> `api` container, but this comes with implications such as your workstation
+> architecture not matching your container's, thus binaries installed via go
+> will not work.
+
+The editor should stop complaining, and the `Go to Definition` feature should
+now work.
 
