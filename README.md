@@ -49,6 +49,7 @@ applications.
 - [Docker Compose](#docker-compose)
   - [Prerequisites](#prerequisites-1)
   - [Initializing the API Application](#initializing-the-api-application)
+  - [Dockerizing the API](#dockerizing-the-api)
 
 ## How to Use
 
@@ -633,3 +634,139 @@ Key things to note:
 
 In the next section, we'll move our project to a docker compose project from
 which we will develop.
+
+## Dockerizing the API
+
+Let's create `api/Dockerfile`. This will contain all of the tooling that our
+developers need in order to develop on the api application, notably `golang`.
+Add the following content:
+
+```bash
+# Source: https://hub.docker.com/_/golang
+FROM golang:1.20.4-bullseye
+
+# Where our application will live in the completed container
+WORKDIR /src
+
+# Copy dependencies such as package manager manifests to our WORKDIR
+# Note: the context of copy directives is relative to the WORKDIR.
+# i.e.) These files are copied into /src/go.mod, etc.
+COPY go.mod go.sum ./
+
+# Install dependencies
+RUN go mod download
+
+# I want our container to remain online while we are developing
+CMD ["sleep", "infinity"]
+```
+
+Next, let's create `docker-compose.yaml`, which will drive our application
+lifecycle using the above docker image:
+
+```bash
+version: "3.9"
+services:
+  api:
+    build:
+      # The directory of which a target dockerfile exists
+      context: ./api
+      #dockerfile: Dockerfile-alternate # Docker Compose finds Dockerfile by
+                                        # default. If you had other Dockerfiles,
+                                        # this is how you'd specify them.
+    ports:
+      - "8080:8080"
+    volumes:
+       - ./api:/src
+```
+
+Run our dockerized application from the root of this repository (not the `api`
+directory).
+
+> Note: older versions of docker compose use the command `docker-compose`.
+> It is recommended to use the new syntax where compose is built into the
+> `docker` command, as shown below.
+
+> Note: if you make changes to your Dockerfile,
+```bash
+# This command is blocking, and you will see all container output in the console
+$ docker compose up
+
+# You can run in detached mode if you prefer to free up your terminal tab
+# (or --detach)
+$ docker compose up -d
+# ... and can access the container logs for this project as such
+$ docker compose logs
+```
+
+In a separate terminal, confirm that the container is running:
+
+```
+$ docker ps
+CONTAINER ID   IMAGE                                COMMAND                  CREATED          STATUS          PORTS                       NAMES
+251d69f20148   docker-kubernetes-crash-course_api   "sleep infinity"         11 seconds ago   Up 10 seconds   0.0.0.0:8080->80/tcp        docker-kubernetes-crash-course_api_1
+```
+
+Note that the `port configuration` is mapping port `8080` from your workstation
+to port `8080` of the docker container.  Confirm that the application is
+running by hitting it with curl:
+
+```bash
+$ curl localhost:8080/
+curl: (52) Empty reply from server
+```
+
+Oh right, our `api` server is not running inside of the container yet. Let's fix
+that:
+
+```bash
+# From the root of this repository (same directory as docker-compose.yaml)
+$ docker compose exec api bash
+
+# Output: you get an ssh shell into your container
+root@3274a566c7fa:/src#
+
+# Run the application from inside the container
+root@3274a566c7fa:/src# go run main.go
+```
+
+Once the server is running in the container, from another tab in your terminal
+on your workstation (outside of the docker container) see if we can query the
+server:
+
+```bash
+$ curl localhost:8080/
+
+# Output
+404 page not found
+```
+
+You can stop the compose environment by hitting `ctrl+c`. This will stop
+the services defined in the compose file. IIf you are running in detached mode,
+run `docker-compose down` from the root of this project instead. This isn't
+obvious at this point in time, but these will also preserve any volume mount
+data unless you specify the `-v or --volumes` argument, which will destroy
+any docker volumes that are *not* attached to your host (like our `api`
+directory is). We have not specified any volumes like this yet.
+
+At this point, you have dockerized our application. If you were to collaborate
+with other developers on this project, you can rest assured that if they have
+`docker compose`, they should be able to get this exact same environment
+replicated in their environment.
+
+Key things to note:
+
+- The combination of your code, Dockerfile, and docker compose enable you to
+  reproducable an environment exactly the same across devices
+- Port mapping between your host and your container just gives you a network
+  path from your `localhost` to your container. Do not forget to run the
+  application within your container that listens on that port!
+  
+  In this environment, that is a requirement. In a production docker image, we
+  might automatically start the server (preferred), or offer a CLI in-container
+  to configure and start our server.
+  
+  In our developer environment, we could have some kind of process watch
+  our filesystem for changes, and kill and recompile/re-run our application.
+  [Air](https://github.com/cosmtrek/air) seems to be a promising tool to do
+  such a thing. This would save you from having to kill/and re-run the
+  `go run` command after making changes.

@@ -1,0 +1,13 @@
+version: "3.9"
+services:
+  api:
+    build:
+      # The directory of which a target dockerfile exists
+      context: ./api
+      #dockerfile: Dockerfile-alternate # Docker Compose finds Dockerfile by
+                                        # default. If you had other Dockerfiles,
+                                        # this is how you'd specify them.
+    ports:
+      - "8080:8080"
+    volumes:
+       - ./api:/src
