@@ -64,6 +64,8 @@ comes secondary to the experience that is intended to be gained here.
   - [Dockerizing the API](#dockerizing-the-api)
   - [Adding the Database Layer](#adding-the-database-layer)
   - [Fix Broken Imports in VSCode](#fix-broken-imports-in-vscode)
+  - [Adding CRUD Features to API](#adding-crud-features-to-api)
+    - [Create a Blog Record](#create-a-blog-record)
 
 ## How to Use
 
@@ -1091,4 +1093,176 @@ Then restart your golang language server
 
 The editor should stop complaining, and the `Go to Definition` feature should
 now work.
+
+## Adding CRUD Features to API
+
+In this section, we'll focus on core functionality for our blog posts. While
+not required, we will use an object relational mapping tool (`ORM`) to drive
+a lot of the database interactions from our `api`. The purpose of using an ORM
+is to stray way from writing as much SQL as we can. We will use [gorm](https://gorm.io/docs/).
+
+### Create a Blog Record
+
+In your `api` container, add the `gorm` dependency and associated postgresql
+driver:
+
+```
+$ go get -u gorm.io/gorm
+$ go get -u gorm.io/driver/postgres
+```
+
+> Note: you might notice that `gorm` supports a form of migrations. It does
+> not seem to support migrations at the file-based level, but instead only
+> "auto-migrations", which can make it difficult to trace changes to the
+> database schema over time. We will not use that feature, but must take note
+> that the type definitions for our models must conform to our migrations,
+> which are now loosely coupled.
+
+Next, let's create a `type` for our blog model. This will be used to marshal
+an incoming JSON body to our model. Create the following directory and
+file on your workstation:
+
+```bash
+$ mkdir api/models
+$ touch api/models/blog.go
+```
+
+> Note: read more about declaring [gorm models](https://gorm.io/docs/models.html).
+> We are using `gorm.Model` to auto-include fields from `gorm`, as well as
+> additional utility from the ORM itself. This also includes fields, like
+> `created_at`, `updated_at`, and `deleted_at`. Remember, because we are using
+> migrations external to `gorm`'s auto-migrate feature, we need to explicitly
+> specify those fields in our migration files. This is especially important
+> if we want to leverage [associations between models using gorm](https://gorm.io/docs/belongs_to.html).
+
+```
+package models
+
+import (
+	"gorm.io/gorm"
+)
+
+type Blog struct {
+	gorm.Model
+	Title string `json:"title" binding:"required"`
+	Body  string `json:"body" binding:"required"`
+}
+
+```
+
+Below, we configure `main.go` to:
+
+1. Connect to our postgres server using the connection string `POSTGRESQL_URL`  (propagated by our container via .env and docker compose)
+2. Enable logging of SQL statements executed by `gorm`
+3. Add a new HTTP endpoint responsible for creating a blog record
+
+```diff
+package main
+
+import (
+	"net/http"
++	"os"
+
++	models "example.com/m/v2/models"
+	"github.com/gin-gonic/gin"
+
++	"gorm.io/driver/postgres"
++	"gorm.io/gorm"
+)
+
+func main() {
++	db, err := gorm.Open(postgres.Open(os.Getenv("POSTGRESQL_URL")), &gorm.Config{
++		Logger: logger.Default.LogMode(logger.Info),
++	})
++	if err != nil {
++		panic("failed to connect database")
++	}
+
+	r := gin.Default()
+	r.GET("/ping", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "pong",
+		})
+	})
++	r.POST("/blogs", func(c *gin.Context) {
++		var blog models.Blog
++		c.BindJSON(&blog)
++		db.Create(&models.Blog{Title: blog.Title, Body: blog.Body})
++	})
+	r.Run() // listen and serve on 0.0.0.0:8080 (for windows "localhost:8080")
+}
+```
+
+At this point, we should be able to create a blog record.
+
+Start the server in the `api` container:
+
+```
+$ go run main.go
+```
+
+Test the creation from your workstation:
+
+```bash
+$ curl -X POST http://localhost:8080/blogs \
+   -H 'Content-Type: application/json' \
+   -d '{"title":"my first blog","body":"hello world!"}'
+
+$ echo $?
+# 0
+```
+
+If curl does not complain with a non-zero exit code, then that likely means you
+received an HTTP 200 (or 200 range) response code. Check the log output from the
+api server:
+
+```
+# Log output from go run main.go
+[GIN] 2023/05/18 - 07:22:10 | 200 |      1.2798ms |      172.26.0.1 | POST     "/blogs"
+```
+
+Looking good so far. Let's verify in the `db` container that there is a blog
+record created:
+
+```
+$ docker compose exec db bash
+root@bb9a81cc65d6:/# psql -U postgres
+psql (15.3 (Debian 15.3-1.pgdg110+1))
+Type "help" for help.
+
+postgres=# select * from blogs;
+
+ blog_id |     title      |     body
+---------+----------------+--------------
+       1 | my first blog  | hello world!
+```
+
+Yay! Our record has been persisted. What great news!
+
+Key takeaways:
+
+- ORM tools can help expedite development, but come with overhead, such as
+  learning curves, especially if you need to write complex queries
+- In a real application, you would want to put more effort into the behavior
+  around HTTP response codes here
+
+  For example, if you re-send that same curl command, you'll see the following
+  output from the server console:
+
+    ```
+    2023/05/18 07:47:06 /src/main.go:29 ERROR: duplicate key value violates unique constraint "blogs_title_key" (SQLSTATE 23505)
+    [0.643ms] [rows:0] INSERT INTO "blogs" ("title","body") VALUES ('my first blog','hello world!')
+    ```
+
+  You would want to account for such an error, and return appropriate HTTP
+  status code to the client, such as a `409 conflict`. We'll make this change
+  later when we improve the code and make it more testable.
+
+- The way that our `gin` routes are implemented is not exactly ideal,
+  what if we needed to handle some complex before or after this point in the
+  application? For example, if we needed to manipulate or impose checks on
+  our models or incoming data, we could see that could get ugly real fast. We
+  will address this in a later section
+
+
 
