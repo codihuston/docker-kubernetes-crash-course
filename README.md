@@ -3,6 +3,17 @@
 This repository is a crash course on how to develop container-native
 applications.
 
+## Disclaimers
+
+While this is intended to educate developers on development workflows for
+container-native applications, much of the implementation is opinionated, and
+not a golden standard of how to do things. However, wherever possible, I attempt
+to provide context, existing standards or patterns, and other such references
+to provide understanding for why a decision is being made.
+
+For example, the quality of the code (software design patterns, glue code, etc.)
+comes secondary to the experience that is intended to be gained here.
+
 ## Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) or [Docker Engine for Linux](https://docs.docker.com/engine/install/ubuntu/)
@@ -35,6 +46,7 @@ applications.
 
 [Table of Contents]
 - [Purpose](#purpose)
+  - [Disclaimers](#disclaimers)
   - [Prerequisites](#prerequisites)
   - [Table of Contents](#table-of-contents)
   - [How to Use](#how-to-use)
@@ -50,6 +62,7 @@ applications.
   - [Prerequisites](#prerequisites-1)
   - [Initializing the API Application](#initializing-the-api-application)
   - [Dockerizing the API](#dockerizing-the-api)
+  - [Adding the Database Layer](#adding-the-database-layer)
 
 ## How to Use
 
@@ -621,7 +634,7 @@ If you've made it this far, then you've successfully initialized a golang
 web application, hosted it locally on your workstation, and queried it to
 see that it is working!
 
-Key things to note:
+Key takeaways:
 
 - Dependencies for the developer
 
@@ -753,7 +766,7 @@ with other developers on this project, you can rest assured that if they have
 `docker compose`, they should be able to get this exact same environment
 replicated in their environment.
 
-Key things to note:
+Key takeaways:
 
 - The combination of your code, Dockerfile, and docker compose enable you to
   reproducable an environment exactly the same across devices
@@ -770,3 +783,287 @@ Key things to note:
   [Air](https://github.com/cosmtrek/air) seems to be a promising tool to do
   such a thing. This would save you from having to kill/and re-run the
   `go run` command after making changes.
+
+## Adding the Database Layer
+
+In this section, we'll add [postgres](https://hub.docker.com/_/postgres) and
+initialize the table using for our blogs
+
+Create an environment variable file in the root of the repo called `.env`.
+We will tell docker compose to source this for our `api` service.
+
+> Note: In the real world, if you are not using a secrets manager to protect
+> and distribute secrets (recommended), then you might fallback on using a
+> `.env` file for each of your environments (prod, etc.). In development it is
+> common to provide a `.env-example`, and to expect your developers to clone
+> that to `.env` and to provide their own values for sensitive fields, such as
+> an API Token to an external service.
+
+```bash
+$ touch .env
+```
+
+Update `docker-compose.yaml` to include this change, and add the `db` service,
+which will host our postgresql server:
+
+```diff
+version: "3.9"
+services:
+  api:
+    build:
+      # The directory of which a target dockerfile exists
+      context: ./api
+      #dockerfile: Dockerfile-alternate # Docker Compose finds Dockerfile by
+                                        # default. If you had other Dockerfiles,
+                                        # this is how you'd specify them.
+    ports:
+      - "8080:8080"
+    volumes:
+       - ./api:/src
++    env_file: .env
++  db:
++    image: postgres:15.3
++    restart: always
++    environment:
++      POSTGRES_USER: postgres
++      POSTGRES_PASSWORD: postgres
++      POSTGRES_DB: blogger
+
+```
+
+Add the postgres connection string as an environment variable to the
+`.env` file we created:
+
+> Note: this connection string is connecting via the postgresql protocol,
+> using the default `username:password` configured by the `POSTGRES_USER` and
+> `POSTGRES_PASSWORD` environment variables, which are used to configure the
+> postgres image [as per the docs](https://hub.docker.com/_/postgres#:~:text=on%20container%20startup.-,POSTGRES_PASSWORD,-This%20environment%20variable).
+> We also in set the initial database name to `blogger`. We are disabling SSL
+> because connections use that by default--enabling this is a separate exercise
+> that we will not cover in this lab. That would be a requirement for
+> production.
+
+```
+POSTGRESQL_URL=postgres://postgres:postgres@db:5432/blogger?sslmode=disable
+```
+
+Start the project:
+
+```bash
+$ docker-compose up
+```
+
+Let's verify that we can connect to the database from the new `db`
+container:
+
+```bash
+$ docker compose exec db bash
+root@bb9a81cc65d6:/# psql -U postgres
+psql (15.3 (Debian 15.3-1.pgdg110+1))
+Type "help" for help.
+
+postgres=#
+```
+
+If you see the shell prompt `postgres=#` that means that the database is at
+least running. Enter `\q` to exit the psql cli. Exit the container.
+
+> Note: accessing the database this way usually means we've authenticated
+> via the postgresql unix socket, which usually only confirms with the OS that
+> the logged-in user is in `pg_hba.conf` with a `local auth-method`. If so,
+> a password is not required. This is typical default behavior for the `root`
+> user. Read more about [pg_hba.conf](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html).
+> We'll authenticate to the database from outside of the container soon, which
+> will require a password.
+
+When developing an application that uses a database, it's ideal to use a
+migration tool so that you can change the database as you iterate on the
+product. We opt for [golang-migrate/migrate](https://github.com/golang-migrate/migrate/tree/master)
+in this project. Let's add the `migrate` tool to our api image:
+
+> Note: we will use the default database as opposed to creating our own
+> database. If you wanted to forego migrations, or configure your database
+> at container startup, refer to [Initialization Scripts](https://hub.docker.com/_/postgres#:~:text=and%20POSTGRES_DB.-,Initialization%20scripts,-If%20you%20would)
+> on the [postgres dockerhub page](https://hub.docker.com/_/postgres).
+
+```diff
+# Source: https://hub.docker.com/_/golang
+FROM golang:1.20.4-bullseye
+
+# Where our application will live in the completed container
+WORKDIR /src
+
+# Copy dependencies such as package manager manifests to our WORKDIR
+# Note: the context of copy directives is relative to the WORKDIR.
+# i.e.) These files are copied into /src/go.mod, etc.
+COPY go.mod go.sum ./
+
+# Install dependencies
++RUN go mod download
++RUN apt-get update && \
++    apt-get install -y \
++    apt-transport-https \
++    ca-certificates \
++    curl \
++    gnupg-agent
++
++# Install golang migrate tool
++RUN curl -sSL https://packagecloud.io/golang-migrate/migrate/gpgkey | apt-key add -
++RUN echo "deb https://packagecloud.io/golang-migrate/migrate/debian/ bullseye main" > /+etc/apt/sources.list.d/migrate.list
++RUN apt-get update && \
++    apt-get install -y migrate
+
+# I want our container to remain online while we are developing
+CMD ["sleep", "infinity"]
+```
+
+Restart the compose project by bringing it down and up again. Verify
+that the `migrate` tool works from the `api` container:
+
+> Note: if your `api` docker image does not include this tool, you can force
+> docker compose to rebuild the container images `docker compose up --build`.
+
+```bash
+$ docker compose exec api bash
+$ migrate -version
+4.15.2
+```
+
+From the `api` container, create our migration files:
+
+```bash
+$ mkdir migrations
+$ migrate create -ext sql -dir db/migrations -seq create_users_table
+$ migrate create -ext sql -dir db/migrations -seq create_blogs_table
+```
+
+Populate the migration file contents as such:
+
+> Important: if you are using docker on linux, you may not have permissions
+> on these files. Docker Desktop automatically resolves these issues, but
+> docker engine on linux does not, thus these files (created from the context
+> within the container), will be owned by root. You can fix this by
+> running the following on your workstation: `sudo chown -R $USER api`.
+> Otherwise, you can prepend the following variables to your docker compose 
+> commands: `UID="$(id -u)" GID="$(id -g)" docker-compose ...`. There are
+> also [other solutions](https://devcoops.com/docker-compose-uid-gid/).
+
+```sql
+-- 000001_create_users_table.up.sql
+CREATE TABLE IF NOT EXISTS users(
+   id serial PRIMARY KEY,
+   username VARCHAR (50) UNIQUE NOT NULL,
+   password VARCHAR (50) NOT NULL,
+   email VARCHAR (300) UNIQUE NOT NULL,
+   created_at TIMESTAMPTZ,
+   updated_at TIMESTAMPTZ,
+   deleted_at TIMESTAMPTZ
+);
+
+```
+
+```sql
+-- 000001_create_users_table.down.sql
+DROP TABLE IF EXISTS users;
+```
+
+```sql
+-- 000002_create_blogs_table.down.sql
+CREATE TABLE IF NOT EXISTS blogs(
+   id serial PRIMARY KEY,
+   title VARCHAR (50) UNIQUE NOT NULL,
+   body TEXT NOT NULL,
+   created_at TIMESTAMPTZ,
+   updated_at TIMESTAMPTZ,
+   deleted_at TIMESTAMPTZ
+);
+
+```
+
+From the `api` container, run the migrations that we created.
+
+> Note: this is making use of the `POSTGRESQL_URL` variable we defined in our
+> `.env` file.
+
+```bash
+$ migrate -database ${POSTGRESQL_URL} -path db/migrations up
+# Output
+1/u create_users_table (12.7821ms)
+2/u create_blogs_table (25.011ms)
+```
+
+From the `db` container, verify the tables exist:
+
+```bash
+# sign into postgres
+$ psql -U postgres
+
+# connect to the bloggers database
+postgres= \c blogger
+postgres= \dt
+               List of relations
+ Schema |       Name        | Type  |  Owner
+--------+-------------------+-------+----------
+ public | blogs             | table | postgres
+ public | schema_migrations | table | postgres
+ public | users             | table | postgres
+ 
+postgres= \d users
+                                       Table "public.users"
+  Column  |          Type          | Collation | Nullable |                Default
+----------+------------------------+-----------+----------+----------------------------------------
+ user_id  | integer                |           | not null | nextval('users_user_id_seq'::regclass)
+ username | character varying(50)  |           | not null |
+ password | character varying(50)  |           | not null |
+ email    | character varying(300) |           | not null |
+Indexes:
+    "users_pkey" PRIMARY KEY, btree (user_id)
+    "users_email_key" UNIQUE CONSTRAINT, btree (email)
+    "users_username_key" UNIQUE CONSTRAINT, btree (username)
+
+postgres= \d blogs
+                                      Table "public.blogs"
+ Column  |         Type          | Collation | Nullable |                Default
+---------+-----------------------+-----------+----------+----------------------------------------
+ blog_id | integer               |           | not null | nextval('blogs_blog_id_seq'::regclass)
+ title   | character varying(50) |           | not null |
+ body    | text                  |           | not null |
+Indexes:
+    "blogs_pkey" PRIMARY KEY, btree (blog_id)
+    "blogs_title_key" UNIQUE CONSTRAINT, btree (title)
+```
+
+At this point, you have successfully configured a postgres database service
+in our docker compose project, and connected to it with a client from another
+container.
+
+> Important: at this point, we are not concerned authenticating or authorizing
+> end-users, and associating them with blog posts. That may come in a later
+> exercise.
+
+Key takeaways:
+
+- Containers in a compose project can automatically communicate to each other
+  via a DNS record matching their service name
+
+  Our `api` service can connect to our postgres database using `db` as the
+  DNS name. This means that anytime we have a client that needs to connect
+  to a service that is hosted in another container in this project, we can
+  simply specify the service name as the `host` or `hostname`.
+
+- You learned how to configure a `postgres` docker container and how to
+  configure the initial database, username, and password
+
+- You learned about [pg_hba.conf](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html)
+  and the `local auth-method` and why a password is required when connecting from the `api` container, but not the `db` container
+
+- You learned about `migrations` and their use case
+
+  Later, when we get to Kubernetes, we'll learn how to ensure that migrations
+  are run prior to auto-booting the server.
+
+- The way we are intializing a database conection it in our `api` is not written
+  well in its current state, because the code is not quite testable. We will
+  expand on what that means and how to fix that with encapsulation in a later
+  section
+
