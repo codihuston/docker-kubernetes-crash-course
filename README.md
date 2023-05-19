@@ -1407,7 +1407,64 @@ $ curl http://localhost:8080/blogs/1
 
 ### Update a Blog
 
-TODO
+In this section, we'll give users the ability to replace an existing blog. This
+would be similar to editing it, but in-code, we must replace the entire record
+(instead of a single field). It is typically easier to do this than to implement
+the ability to replace only a single field at a time (by which we would use
+an `HTTP PATCH` request). This replacement method we are using will use an
+`HTTP PUT` request to `/blogs/:id`. It should take some blog input, and replace
+it in the database.
+
+In `main.go`, add the following route:
+
+```go
+r.PUT("/blogs/:id", func(c *gin.Context) {
+  id, err := strconv.ParseUint(c.Params.ByName("id"), 10, 64)
+  if err != nil {
+    fmt.Println(err)
+  }
+
+  var blog models.Blog
+  c.BindJSON(&blog)
+
+  blog.ID = uint(id)
+
+  db.Save(&blog)
+  c.JSON(http.StatusOK, blog)
+})
+```
+
+Restart the `api` server. Now let's replace the first blog by running the
+following command on your workstation:
+
+```bash
+$ curl -X PUT http://localhost:8080/blogs/1 \
+   -H 'Content-Type: application/json' \
+   -d '{"title":"my first edited blog","body":"hello world!"}'
+
+# Output
+{
+  "ID": 1,
+  "CreatedAt": "0001-01-01T00:00:00Z",
+  "UpdatedAt": "2023-05-19T05:58:09.8155476Z",
+  "DeletedAt": null,
+  "title": "my first edited blog",
+  "body": "hello world!"
+}
+```
+
+And you can confirm it is edited by fetching it again and confirming its output
+is expected.
+
+```bash
+$ curl http://localhost:8080/blogs/1
+```
+
+Key takeaways:
+
+- You can see that there is some typecasting happening here. If an error were
+  to occur for whatever reason, we are not handling that adequately. We will
+  address this in a future section
 
 ### Delete a Blog
 

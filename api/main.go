@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 
 	models "example.com/m/v2/models"
 	"github.com/gin-gonic/gin"
@@ -42,6 +44,20 @@ func main() {
 		var blog models.Blog
 		c.BindJSON(&blog)
 		db.Create(&models.Blog{Title: blog.Title, Body: blog.Body})
+	})
+	r.PUT("/blogs/:id", func(c *gin.Context) {
+		id, err := strconv.ParseUint(c.Params.ByName("id"), 10, 64)
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		var blog models.Blog
+		c.BindJSON(&blog)
+
+		blog.ID = uint(id)
+
+		db.Save(&blog)
+		c.JSON(http.StatusOK, blog)
 	})
 	r.Run() // listen and serve on 0.0.0.0:8080 (for windows "localhost:8080")
 }
