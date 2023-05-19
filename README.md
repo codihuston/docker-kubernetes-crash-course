@@ -1468,6 +1468,57 @@ Key takeaways:
 
 ### Delete a Blog
 
-TODO
+In this section, we'll give users the ability to delete a blog. This is done
+by sending an `HTTP DELETE` request using an identifier for the resource we're
+targeting--in this case, the id. So to delete our first blog, we'd send the
+request to `/blogs/1`.
 
+In `main.go`, add the following:
 
+```go
+r.DELETE("/blogs/:id", func(c *gin.Context) {
+  id := c.Params.ByName("id")
+  db.Delete(&models.Blog{}, id)
+  c.JSON(http.StatusOK, nil)
+})
+```
+
+Now let's delete our first blog:
+
+```bash
+$ curl -X DELETE http://localhost:8080/blogs/1
+```
+
+You should not receive any output, but see in the `api` server console, the
+following was logged, indicating the deletion went through:
+
+```
+2023/05/19 06:19:33 /src/main.go:64
+[2.142ms] [rows:1] UPDATE "blogs" SET "deleted_at"='2023-05-19 06:19:33.261' WHERE "blogs"."id" = '1' AND "blogs"."deleted_at" IS NULL
+[GIN] 2023/05/19 - 06:19:33 | 200 |      2.2975ms |      172.26.0.1 | DELETE   "/blogs/1"
+```
+
+Try to fetch it to confirm deletion:
+
+```bash
+$ curl http://localhost:8080/blogs/1
+```
+
+You should not receive any output, but notice the API server still reports
+it sent an `HTTP 200` status code.
+
+```
+2023/05/19 06:19:59 /src/main.go:40
+[0.533ms] [rows:0] SELECT * FROM "blogs" WHERE "blogs"."id" = '1' AND "blogs"."deleted_at" IS NULL
+[GIN] 2023/05/19 - 06:19:59 | 200 |       671.5µs |      172.26.0.1 | GET      "/blogs/1"
+```
+
+That is not ideal, and should be an `HTTP 404`. As you can see, there are
+several things that our application needs improvement upon.
+
+Key takeaways:
+
+- Fetching a non-existing record returns a 200 instead of a 400 HTTP status code
+- Anyone can CRUD our blog resources, which is not very secure
+
+These will be addressed in a future section.

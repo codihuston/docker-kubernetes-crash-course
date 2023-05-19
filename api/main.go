@@ -59,5 +59,10 @@ func main() {
 		db.Save(&blog)
 		c.JSON(http.StatusOK, blog)
 	})
+	r.DELETE("/blogs/:id", func(c *gin.Context) {
+		id := c.Params.ByName("id")
+		db.Delete(&models.Blog{}, id)
+		c.JSON(http.StatusOK, nil)
+	})
 	r.Run() // listen and serve on 0.0.0.0:8080 (for windows "localhost:8080")
 }
