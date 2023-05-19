@@ -1,0 +1,101 @@
+#!/bin/bash
+set -eo pipefail
+
+DEBUG_PORT="${DEBUG_PORT:-4000}"
+START=
+STOP=
+
+main(){
+  parse_args "$@"
+
+  start_debug_server
+  stop_debug_server
+}
+
+print_help() {
+  cat << EOF
+NAME
+  debug [OPTIONS]
+
+DESCRIPTION
+  Either start or stop a delve debugging server.
+
+OPTIONS
+  --start
+      Start the debugging server. Once started, set your breakpoints and
+      connect with vscode. Trigger your breakpoints by forcing your
+      application down the appropriate code path.
+
+      In this mode, delve ignores SIGINT and cannot be killed with ctrl+c.
+
+  --stop
+      Kill the debugging server.
+
+EOF
+}
+
+is_in_container() {
+  grep 'docker\|lxc' /proc/1/cgroup > /dev/null
+}
+
+# This command will ignore SIGINT. You must stop the server
+# by killing it. Run `debug --stop`
+start_debug_server() {
+  if [ "$START" != "true" ]; then
+    return
+  fi
+  
+  echo "Starting delve server..."
+  if is_in_container; then
+    dlv debug example.com/m/v2 --listen=":$DEBUG_PORT" --headless=true --log=true --api-version=2
+  else
+    docker compose exec api dlv debug example.com/m/v2 --listen=":$DEBUG_PORT" --headless=true --log=true --api-version=2
+  fi
+}
+
+# Disconnecting from the debugging server on the vscode side should kill
+# the debugging server. If it does not, you can use this command to kill it.
+stop_debug_server() {
+  if [ "$STOP" != "true" ]; then
+    return
+  fi
+
+  echo "Stopping delve server..."
+  echo "Note: if started from outside of the container, you must also stop from outside the container. I cannot kill the server from within the container in that case."
+  if is_in_container; then
+    kill "$(ps -a | grep dlv | awk '{print $1}')" || true
+  else
+    echo "Skipping -- will not kill process on the container host. Stop debugger by disconnecting from it in your IDE."
+  fi
+}
+
+
+parse_args(){
+  while test $# -gt 0; do
+  case "$1" in
+      -h | --help)
+          print_help
+          ;;
+      --start)
+          START="true"
+          shift
+          ;;
+      --stop)
+          STOP="true"
+          shift
+          ;;
+      --) shift; 
+          break 
+          ;;
+      -?*)
+          printf 'WARN: Unknown option: %s\n' "$1" >&2
+          exit 1
+          ;;
+      *)  # Default case: No more options, so break out of the loop.
+          break
+          ;;
+  esac
+  done
+}
+
+main "$@"

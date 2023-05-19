@@ -2,11 +2,11 @@
 FROM golang:1.20.4-bullseye
 
 # Where our application will live in the completed container
-WORKDIR /src
+WORKDIR /api
 
 # Copy dependencies such as package manager manifests to our WORKDIR
 # Note: the context of copy directives is relative to the WORKDIR.
-# i.e.) These files are copied into /src/go.mod, etc.
+# i.e.) These files are copied into /api/go.mod, etc.
 COPY go.mod go.sum ./
 
 # Install dependencies
@@ -23,6 +23,9 @@ RUN curl -sSL https://packagecloud.io/golang-migrate/migrate/gpgkey | apt-key ad
 RUN echo "deb https://packagecloud.io/golang-migrate/migrate/debian/ bullseye main" > /etc/apt/sources.list.d/migrate.list
 RUN apt-get update && \
     apt-get install -y migrate
+
+# Install golang debugger
+RUN go install github.com/go-delve/delve/cmd/dlv@latest
 
 # I want our container to remain online while we are developing
 CMD ["sleep", "infinity"]

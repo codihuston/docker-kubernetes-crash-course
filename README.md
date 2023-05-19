@@ -70,6 +70,7 @@ comes secondary to the experience that is intended to be gained here.
     - [Get a Single Blog](#get-a-single-blog)
     - [Update a Blog](#update-a-blog)
     - [Delete a Blog](#delete-a-blog)
+  - [Setup the Go Debugger](#setup-the-go-debugger)
 
 ## How to Use
 
@@ -1522,3 +1523,132 @@ Key takeaways:
 - Anyone can CRUD our blog resources, which is not very secure
 
 These will be addressed in a future section.
+
+## Setup the Go Debugger
+
+We will use [delve](https://github.com/go-delve/delve/tree/master/Documentation/installation) to enable us to step
+through code, make debugging easier. This will enable us to step through code
+without having to resort to print statements...
+
+Add the following to [api/Dockerfile](./api/Dockerfile):
+
+```dockerfile
+# Install golang debugger
+RUN go install github.com/go-delve/delve/cmd/dlv@latest
+```
+
+Also run the above `go` command on your workstation, as we will need to use
+`dlv` in client mode to connect to the debugging server.
+
+Also expose an arbitrary port that we will use for the debugging server. Expose
+that port in [docker-compose.yml](./docker-compose.yml).
+
+```diff
+ports:
+  - "8080:8080"
++  - "4000:4000"
+```
+
+Rename [Dockerfile](./api/Dockerfile) to [Dockerfile.dev](Dockerfile.dev).
+In the new file, change the `WORKDIR` path to `api`. This is because
+`delve` and `vscode` maintain the path of the workspace directory when
+communicating to the debug server.
+
+```diff
+# Where our application will live in the completed container
+-WORKDIR /src
++WORKDIR /api
+```
+
+Create a `.vscode/launch.json` file with the following contents. This
+configuration will allow you to connect to the `delve` debugger server
+once we run it:
+
+> Note: the use of [substitutePath](https://github.com/golang/vscode-go/blob/master/docs/debugging.md)
+> will replace the path of your files up to the root of this repo with an empty
+> string. This ensures that the debugging server can find the files that you
+> mark with a breakpoint relative to the server itself (in-container).
+>
+> For example, the path `/home/$USER/git/repo/api/main.go` would appear
+> as `api/main.go` in the docker container. The debugging server will
+> be able to find this relatively due to the volume mounts we've
+> defined in [docker-compose.yml](./docker-compose.yml).
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+        "name": "Remote API Server",
+        "type": "go",
+        "request": "attach",
+        "mode": "remote",
+        "port": 4000,
+        "host": "127.0.0.1",
+        "showLog": true,
+        "trace": "verbose",
+        "substitutePath": [{
+          "from": "${workspaceFolder}",
+          "to": ""
+        }],
+    }
+  ]
+}
+```
+
+Stop your compose project, and restart it, ensuring that the `api` container
+is rebuilt:
+
+```bash
+# if not detached, ctrl+c
+# if detached, run
+$ docker compose down
+$ docker compose up --build
+```
+
+Test the delve command in the `api` container:
+
+```
+$ docker compose exec api bash
+root@3da06136987d:/src# dlv version
+Delve Debugger
+Version: 1.20.2
+Build: $Id: e0c278ad8e0126a312b553b8e171e81bcbd37f60
+```
+
+Create a breakpoint on any line in your `api` codebase.
+
+Run the delve server by running the script below from your workstation:
+
+```bash
+./bin/debug --start
+```
+
+Connect to the debugging server in vscode using the `Remote API Server`
+launch configuration profile that we created.
+
+Start debugging on the client side in your IDE (using `F5` in vscode).
+
+If your breakpoint is within a route, be sure to query your webserver.
+When your breakpoint is hit, your vscode editor should display the
+debugging information and allow you to step through the code.
+
+> Note: currently, I could not figure out how to get vscode and delve
+> to play nicely when stepping through a 3rd party go library/module.
+> The vscode client attempts to open those under your vscode
+> [${workspaceFolder}](https://code.visualstudio.com/docs/editor/variables-reference)
+> with the `GOROOT` concatenated on the end.
+
+To stop the debug server, disconnect from the server from your IDE.
+
+> Note: if you started the debug server from inside the container with the
+> above script, you can stop it by running this from within the container:
+> `./bin/debug --stop`.
+
+
+Stop the delve server:
+
+```bash
+./bin/debug --stop
+```
+

@@ -4,13 +4,14 @@ services:
     build:
       # The directory of which a target dockerfile exists
       context: ./api
-      #dockerfile: Dockerfile-alternate # Docker Compose finds Dockerfile by
+      dockerfile: Dockerfile.dev # Docker Compose finds Dockerfile by
                                         # default. If you had other Dockerfiles,
                                         # this is how you'd specify them.
     ports:
       - "8080:8080"
+      - "4000:4000"
     volumes:
-       - ./api:/src
+       - ./api:/api
     env_file: .env
   db:
     image: postgres:15.3
