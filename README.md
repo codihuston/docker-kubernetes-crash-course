@@ -66,6 +66,10 @@ comes secondary to the experience that is intended to be gained here.
   - [Fix Broken Imports in VSCode](#fix-broken-imports-in-vscode)
   - [Adding CRUD Features to API](#adding-crud-features-to-api)
     - [Create a Blog Record](#create-a-blog-record)
+    - [Get All Blogs](#get-all-blogs)
+    - [Get a Single Blog](#get-a-single-blog)
+    - [Update a Blog](#update-a-blog)
+    - [Delete a Blog](#delete-a-blog)
 
 ## How to Use
 
@@ -1264,5 +1268,108 @@ Key takeaways:
   our models or incoming data, we could see that could get ugly real fast. We
   will address this in a later section
 
+### Get All Blogs
+
+For the next few sections, you can refer to the [gorm query documentation](https://gorm.io/docs/query.html)
+for how to query your database. In this section, we'll:
+
+- Implement an endpoint for fetching all blog records
+- Create a second record
+- Manually test the new endpoint
+
+First, let's implement the endpoint `/blogs`. If an `HTTP GET request` is sent
+to this route, return all blogs. Let's edit `main.go`:
+
+```diff
+package main
+
+import (
+	"net/http"
+	"os"
+
+	models "example.com/m/v2/models"
+	"github.com/gin-gonic/gin"
+
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+)
+
+func main() {
+	db, err := gorm.Open(postgres.Open(os.Getenv("POSTGRESQL_URL")), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Info),
+	})
+	if err != nil {
+		panic("failed to connect database")
+	}
+
+	r := gin.Default()
+	r.GET("/ping", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "pong",
+		})
+	})
++	r.GET("/blogs", func(c *gin.Context) {
++		var blogs []models.Blog
++		db.Find(&blogs)
++		c.JSON(http.StatusOK, blogs)
++	})
+	r.POST("/blogs", func(c *gin.Context) {
+		var blog models.Blog
+		c.BindJSON(&blog)
+		db.Create(&models.Blog{Title: blog.Title, Body: blog.Body})
+	})
+	r.Run() // listen and serve on 0.0.0.0:8080 (for windows "localhost:8080")
+}
+
+```
+
+Next, let's restart the `api` server by hitting `ctrl+c` in the terminal that is
+running `go run main.go`, and rerunning that command. Now create a second record
+by running the following from your workstation:
+
+```
+$ curl -X POST http://localhost:8080/blogs \
+   -H 'Content-Type: application/json' \
+   -d '{"title":"my second blog","body":"hello world!"}'
+```
+
+And then query our `api` for all of the blogs created so far:
+
+```bash
+$ curl http://localhost:8080/blogs
+
+# Output
+[
+  {
+    "ID": 1,
+    "CreatedAt": "2023-05-19T04:01:30.113952Z",
+    "UpdatedAt": "2023-05-19T04:01:30.113952Z",
+    "DeletedAt": null,
+    "title": "my first blog",
+    "body": "hello world!"
+  },
+  {
+    "ID": 2,
+    "CreatedAt": "2023-05-19T04:49:48.037571Z",
+    "UpdatedAt": "2023-05-19T04:49:48.037571Z",
+    "DeletedAt": null,
+    "title": "my second blog",
+    "body": "hello world!"
+  }
+]
+```
+
+### Get a Single Blog
+
+TODO
+
+### Update a Blog
+
+TODO
+
+### Delete a Blog
+
+TODO
 
 

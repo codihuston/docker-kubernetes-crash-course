@@ -26,6 +26,11 @@ func main() {
 			"message": "pong",
 		})
 	})
+	r.GET("/blogs", func(c *gin.Context) {
+		var blogs []models.Blog
+		db.Find(&blogs)
+		c.JSON(http.StatusOK, blogs)
+	})
 	r.POST("/blogs", func(c *gin.Context) {
 		var blog models.Blog
 		c.BindJSON(&blog)
