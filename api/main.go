@@ -40,6 +40,15 @@ func main() {
 		db.Find(&blog, id)
 		c.JSON(http.StatusOK, blog)
 	})
+	r.GET("/blogs/:id/words", func(c *gin.Context) {
+		id := c.Params.ByName("id")
+
+		var blog models.Blog
+		db.Find(&blog, id)
+		wc := blog.GetWordCount()
+
+		c.JSON(http.StatusOK, wc)
+	})
 	r.POST("/blogs", func(c *gin.Context) {
 		var blog models.Blog
 		c.BindJSON(&blog)

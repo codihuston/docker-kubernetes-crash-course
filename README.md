@@ -71,6 +71,13 @@ comes secondary to the experience that is intended to be gained here.
     - [Update a Blog](#update-a-blog)
     - [Delete a Blog](#delete-a-blog)
   - [Setup the Go Debugger](#setup-the-go-debugger)
+    - [Running Tests](#running-tests)
+  - [Testing I](#testing-i)
+    - [A Handful of Unit Tests](#a-handful-of-unit-tests)
+    - [Unit Testing, Integration Testing, and Stubs I](#unit-testing-integration-testing-and-stubs-i)
+    - [Unit Tests and Mocks](#unit-tests-and-mocks)
+    - [A Simple Integration Test](#a-simple-integration-test)
+    - [A Simple E2E Test](#a-simple-e2e-test)
 
 ## How to Use
 
@@ -1645,10 +1652,441 @@ To stop the debug server, disconnect from the server from your IDE.
 > above script, you can stop it by running this from within the container:
 > `./bin/debug --stop`.
 
+### Running Tests
 
-Stop the delve server:
+## Testing I
 
-```bash
-./bin/debug --stop
+Testing can be very complicated if the codebase is poorly written and if you
+do not have a test plan. This is the state that this codebase is currently in.
+We will focus on unit, integration, and end-to-end (E2E) tests with the
+following goals/definitions of each of them:
+
+- Unit: a single functionality. A function, class, or module that does one
+  thing. You are testing that single code path
+
+    Oftentimes, you'll be testing the implementation of this piece of code.
+    This includes errors and parameter permutations. We want to be careful
+    of testing too many permutations at a higher level, as this can increase
+    the time our tests take substantially.
+
+- Integration: a combination of modules or services. You are testing a code path
+  between public faces interfaces in-code or services
+- E2E: a fully functioning application and related services. You are testing
+  how the system behaves from the end-user perspective
+
+Test writing typically follows the Four Phase test plan:
+
+- Setup
+- Exercise
+- Verify
+- Teardown
+
+One of the boons of golang is that it is not Object Oriented.
+Relationships are always established through interfaces, as opposed to
+inheritence. This generally means that we can have a `test double` for any
+behavior so long as the interface fits.
+
+A `test double` has many aliases, as some tests might have
+different goals, achieved with `mocks`, `fakes`, and `spies`
+(which will be explained more later), but in short, it allows us to control the
+flow of our code in tests to achieve a specific testing goal. Using test doubles
+makes unit testing (and in some cases, integration testing) simpler, faster,
+and more targeted. However, we need to be weary of overtesting, which mocking
+can lead to if we are not testing intelligently. We should always ensure that
+we are testing *some meaningful behavior*. We'll decipher what that means in
+some examples below.
+
+You will often hear the term `mocking` used interchangably with one of the
+many flavors of `test doubles`.
+
+As an aside, in Object Oriented Programming (`OOP`), unit testing can also
+be made easier if you have an abstract class that many sub-classes inherit from,
+given the inherited methods are not overriden, you would need fewer tests to
+cover that behavior as you only need to test the base method as needed. As
+always, this still subject to how well written the code is.
+
+Go provides an in-built testing framework
+[(go test)](https://pkg.go.dev/testing). We will be leveraging that.
+
+### A Handful of Unit Tests
+
+First, we don't really have anything to test at the unit level
+because we are leveraging so much third-party tooling that is well-tested
+already. We should aim to test core functionality of our business logic.
+
+Let's create a function `GetWordCount` on the `blog` model that counts the
+number of occurances of words in the a blog post.
+
+```go
+# api/models/blog.go
+func (b *Blog) GetWordCount() map[string]int {
+	m := make(map[string]int)
+
+	words := strings.Split(b.Body, " ")
+
+	// For each word
+	for _, element := range words {
+		// Check if in map
+		_, ok := m[element]
+		if ok {
+			// If so, increment
+			m[element] += 1
+		} else {
+			// Otherwise, init to 1
+			m[element] = 1
+		}
+	}
+
+	return m
+}
 ```
 
+Let's add an endpoint to serve this functionality:
+
+```go
+// main.go
+r.GET("/blogs/:id/words", func(c *gin.Context) {
+  id := c.Params.ByName("id")
+
+  var blog models.Blog
+  db.Find(&blog, id)
+  wc := blog.GetWordCount()
+
+  c.JSON(http.StatusOK, wc)
+})
+```
+
+> Note: be careful not to abuse REST Principles by turning your API into a
+> series of Remote Procedure Calls. One could argue that this data is or is not
+> a valid "resource". Since this is not modifying state, and access is driven
+> by HTTP Verbs, we'll allow it for now. The purpose here is to really give
+> you an interface to invoke this code (perhaps in conjunction with the
+> debugger) to see its output before we introduce you to the testing framework.
+
+Next, let's rerun the server, then count words in our second blog post:
+
+```bash
+$ curl localhost:8080/blogs/2/words
+{"hello":1,"world!":1}
+```
+
+Let's create another blog post to test:
+
+```bash
+$ curl -X POST http://localhost:8080/blogs \
+   -H 'Content-Type: application/json' \
+   -d '{"title":"my fourth blog","body":"red red red blue green green yellow yellow yellow yellow"}'
+
+$ curl localhost:8080/blogs/4/words
+{"blue":1,"green":2,"red":3,"yellow":4}
+```
+
+Perfect! Now we have some of our own business logic to test.
+
+Let's create `api/models/blog_test.go` to confirm this behavior:
+
+```bash
+package models
+
+import (
+	"reflect"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
+
+func TestWordCount(t *testing.T) {
+	var blog = &Blog{
+		Title: "test title",
+		Body:  "red red red blue green green yellow yellow yellow yellow",
+	}
+
+	result := blog.GetWordCount()
+	expected := map[string]int{
+		"blue":   1,
+		"green":  2,
+		"red":    3,
+		"yellow": 4,
+	}
+
+	assert.True(t, reflect.DeepEqual(result, expected), "The two word counts be the same.")
+}
+```
+
+Run the test from the `api` directory on your workstation:
+
+```bash
+$ go test ./...
+```
+
+Or, run it directly from the `api/models` directory:
+
+```bash
+# This command only tests files within the current directory.
+$ go test
+PASS
+ok      example.com/m/v2/models 0.003s
+
+# This command shows more details on what tests were run.
+$ go test -v
+=== RUN   TestWordCount
+--- PASS: TestWordCount (0.00s)
+PASS
+ok      example.com/m/v2/models 0.003s
+```
+
+Great! Let's create a dependency that we can use in an integration test later.
+First, we'll unit test that new dependency. From the `api` directory in
+your workstation, create the following folders and files:
+
+```bash
+$ mkdir -p pkg/utils
+$ touch strings.go
+$ touch strings_test.go
+```
+
+Populate `strings.go` with the following code. We will use this to strip out
+characters in a given string:
+
+```go
+package strings
+
+import (
+	"regexp"
+)
+
+// Returns a string with all non-word characters removed.
+func ReplaceSymbols(s string) string {
+	m := regexp.MustCompile("[^a-zA-Z0-9]")
+	return m.ReplaceAllString(s, "")
+}
+
+```
+
+In the `strings_test.go`, let's test a few different input scenarios:
+
+```go
+package strings
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
+
+func TestReplaceSymbols(t *testing.T) {
+	s := "h!e.l/l>o$w/o\\r,l<d"
+
+	assert.Equal(t, "helloworld", ReplaceSymbols(s), "All symbols are replaced")
+}
+
+func TestReplaceSpace(t *testing.T) {
+	s := "hello world"
+
+	assert.Equal(t, "helloworld", ReplaceSymbols(s), "A single space is replaced")
+}
+
+func TestReplaceMultipleSpaces(t *testing.T) {
+	s := "he  l  l  o w               o r l        d"
+
+	assert.Equal(t, "helloworld", ReplaceSymbols(s), "Multiple spaces in sequence are replaced")
+}
+
+```
+
+Now let's run these test by running the following commands from your `api`
+container:
+
+```
+$ cd pkg/utils
+$ go test -v
+=== RUN   TestReplaceSymbols
+--- PASS: TestReplaceSymbols (0.00s)
+=== RUN   TestReplaceSpace
+--- PASS: TestReplaceSpace (0.00s)
+=== RUN   TestReplaceMultipleSpaces
+--- PASS: TestReplaceMultipleSpaces (0.00s)
+PASS
+ok      example.com/m/v2/pkg/utils      0.003s
+```
+
+Perfect! Now we have two units that we will test at an integration level in
+the next section.
+
+### Unit Testing, Integration Testing, and Stubs I
+
+Let's add requirements for the `GetWordCount` feature from a blog are to ignore
+*all* non-alphanumeric symbols.So, `!blue blue` should result in two counts of
+`blue`, and `re!d r$ed r><ed` should result in three counts of `red`. It just so
+happens that we have two units that, when combined, can satisfy this
+requirement.
+
+In this section, we'll update `GetWordCount` to use the
+`strings.ReplaceSymbols()` method that we created in the last section, and write
+a test to verify that new behavior.
+
+Let's update `models/blog.go`:
+
+```diff
+package models
+
+import (
+	"strings"
+
+	"gorm.io/gorm"
+
+	utils "example.com/m/v2/pkg/utils"
+)
+
+type Blog struct {
+	gorm.Model
+	Title string `json:"title" binding:"required"`
+	Body  string `json:"body" binding:"required"`
+}
+
+func (b *Blog) GetWordCount() map[string]int {
+	m := make(map[string]int)
+
+	words := strings.Split(b.Body, " ")
+
+	// For each word
+	for _, word := range words {
+		// Check if in map
+-		_, ok := m[word]
++		_, ok := m[utils.ReplaceSymbols(word)]
+		if ok {
+			// If so, increment
+			m[word] += 1
+		} else {
+			// Otherwise, init to 1
+			m[word] = 1
+		}
+	}
+
+	return m
+}
+
+```
+
+Now `blog.GetWordCount()` has a dependency on our `utils` package. One could
+argue that the problem with this code is that is not very testable, because
+we cannot use a `test double` for the call to `utils.ReplaceSymbols(word)` due
+to the way we've included it here. Therefore, we cannot test
+`blog.GetWordCount()` at the unit level, we will have to test it at the
+integration level.
+
+If we could test this at the unit level, we would want to `stub` the call
+to `utils.ReplaceSymbols(word)`. A `stub` is a type of `test double` that simply
+enforces some arbitrary return value for the sake of testing only. No
+functionality is tested in the code that we are stubbing out itself,
+the hard-coded response is used to drive the rest of the code down a specific
+path for testing. Stubbing out that call might look like the following code:
+
+```go
+// blog.go
+func (b *Blog) GetWordCount( replaceSymbols func) map[string]int {
+	m := make(map[string]int)
+
+	words := strings.Split(b.Body, " ")
+
+	// For each word
+	for _, word := range words {
+		// Check if in map
+-		_, ok := m[word]
++		_, ok := m[replaceSymbols(word)]
+		if ok {
+			// If so, increment
+			m[word] += 1
+		} else {
+			// Otherwise, init to 1
+			m[word] = 1
+		}
+	}
+
+	return m
+}
+
+// blog_test.go
+func replaceSymbolsStub(s string){
+  // This is hard-coded, no functionality exists here
+  return "blue blue"
+}
+
+func TestWordCountWithStub(t *testing.T) {
+	var blog = &Blog{
+		Title: "test title",
+		Body:  "!blue blue",
+	}
+
+  // This call returns the hard-coded value "blue blue"
+	result := blog.GetWordCount(replaceSymbolsStub)
+  // Which gets processed intot the following...
+	expected := map[string]int{
+		"blue":   2,
+	}
+
+	assert.True(t, reflect.DeepEqual(result, expected), "The two word counts be the same.")
+}
+
+```
+
+> Note: in reality, you might mock something out if you want to assume that
+> will return a successful or erroneous result. In such scenarios, you are not
+> testing the external functionality, but the *inteface* of the dependency in
+> conjunction with our code and the code path that follows.
+
+On the flip side, one could argue that you do not need to use a `stub` here.
+The function `utils.ReplaceSymbols()` does not have any side effects. It does
+not mutate state anywhere inside or outside of itself. Therefore, it might
+be adequate to test that function at the unit level in isolation, and to forego
+any `stubbing or mocking` of it here.
+
+However, the lack of the ability to stub here means that we cannot write a unit
+test for `blog.GetWordCount()`, but instead, tests around this method would be
+considered an `integration test`. This is because because we have two components
+`ReplaceSymbols()` and `GetWordCount()` that are working together, unstubbed.
+
+Key takeaways:
+
+- The nuance between unit and integration testing in this case is whether or not
+  the external call to a separate component can be stubbed out
+- Because the ability to stub out `utils.ReplaceSymbols()` in our code does not
+  exist, it could be considered a code smell, because we cannot test
+  `blog.GetWordCount()` at the unit level
+- In order to test `blog.GetWordCount()` at the unit level, it would require our
+  code structure to change (be it function signatures, and encapsulation or use
+  of a `factory pattern` for the `utils` package)
+
+  It is up to your discretion as to whether or not such attention to detail is
+  required. One could argue that if our `utils` package remains stateless, that
+  encapsulating it to enable the abilitry to `stub` out calls to it would be
+  over engineering.
+
+  Now, apply this logic to an API client that you've written to interact with
+  another service. You would likely want that to be as testable as possible,
+  because it would be core to the functionality of your product. The more
+  code paths you test at the unit level, the fewer tests you might need at the
+  higher level, ultimately saving you time in CI/CD pipelines and developer
+  feedback loops.
+
+
+### Unit Tests and Mocks
+
+A mock actually verifies that the mocked out methods were called (a spy).
+
+TODO
+
+### A Simple Integration Test
+
+Let's say the requirements for this feature are to ignore *all*
+non-alphanumeric symbols.So, `!blue blue` should result in two counts of `blue`,
+and `re!d red` should result in two counts of `red`. It just so happens that
+we have two units that, when combined, can satisfy this requirement.
+
+Let's 
+
+TODO
+
+### A Simple E2E Test
+
+TODO
