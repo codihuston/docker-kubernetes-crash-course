@@ -1362,7 +1362,48 @@ $ curl http://localhost:8080/blogs
 
 ### Get a Single Blog
 
-TODO
+It is common in REST to fetch records by some field. In this case, we'll use
+the ID field--you could even use the blog title if you wanted to. When we
+send an `HTTP GET` request to `/blogs/:id`, it should return the blog with that
+ID.
+
+In `main.go`, add the following route:
+
+```go
+r.GET("/blogs/:id", func(c *gin.Context) {
+  id := c.Params.ByName("id")
+  fmt.Println("id qqq", id)
+
+  var blog models.Blog
+  db.Find(&blog, id)
+  c.JSON(http.StatusOK, blog)
+	})
+```
+
+Restart the `api` server and run the following from your workstation:
+
+```bash
+$ curl http://localhost:8080/blogs/1
+{
+  "ID": 1,
+  "CreatedAt": "2023-05-19T04:01:30.113952Z",
+  "UpdatedAt": "2023-05-19T04:01:30.113952Z",
+  "DeletedAt": null,
+  "title": "my first blog",
+  "body": "hello world!"
+}
+
+
+$ curl http://localhost:8080/blogs/1
+{
+  "ID": 2,
+  "CreatedAt": "2023-05-19T04:49:48.037571Z",
+  "UpdatedAt": "2023-05-19T04:49:48.037571Z",
+  "DeletedAt": null,
+  "title": "my second blog",
+  "body": "hello world!"
+}
+```
 
 ### Update a Blog
 
