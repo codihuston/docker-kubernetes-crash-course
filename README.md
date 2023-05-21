@@ -75,6 +75,7 @@ comes secondary to the experience that is intended to be gained here.
   - [Testing I](#testing-i)
     - [A Handful of Unit Tests](#a-handful-of-unit-tests)
     - [Unit Testing, Integration Testing, and Stubs I](#unit-testing-integration-testing-and-stubs-i)
+    - [Unit Testing, Integration Testing, and Stubs II](#unit-testing-integration-testing-and-stubs-ii)
     - [Unit Tests and Mocks](#unit-tests-and-mocks)
     - [A Simple Integration Test](#a-simple-integration-test)
     - [A Simple E2E Test](#a-simple-e2e-test)
@@ -2068,6 +2069,83 @@ Key takeaways:
   code paths you test at the unit level, the fewer tests you might need at the
   higher level, ultimately saving you time in CI/CD pipelines and developer
   feedback loops.
+
+### Unit Testing, Integration Testing, and Stubs II
+
+In the last section, we changed our business logic in a way that prevents us
+from testing a specific function at the unit level by introducing a
+dependency that cannot be stubbed. This means that the lowest level test we
+can write for this function is an integration test. That is arguably okay in
+some scenarios, but let's explore scenarios where that might not be the case.
+
+We mentioned earlier that the state of our code is not ideal at the moment. Take
+a look at the following route and ask yourself how you would test this code?
+
+```go
+r.GET("/blogs/:id", func(c *gin.Context) {
+  id := c.Params.ByName("id")
+
+  var blog models.Blog
+  db.Find(&blog, id)
+  c.JSON(http.StatusOK, blog)
+})
+```
+
+Here are some things that come to mind:
+
+- The second parameter to `r.GET()` is an anonymous function--this cannot be
+  tested at the unit or integration level
+
+  However, it can be tested at the E2E level (to some degree), since I could
+  start my server, query that endpoint, and verify its output.
+
+- What if I wanted to verify that `db.Find()` actually found a record at the
+  unit or integration level?
+
+  Realistically, when testing at the unit level, it would be worth verifying
+  if `db.Find()` was called, but not test the underlying the code of the 3rd
+  party module. That would tell us that this interface is being used at the
+  unit level, and receives the expected parameters. We would also `stub` out
+  that method to simply mutate the given reference of `models.Blog` whoese value
+  we would verify after the test. So the goal here--at the unit level--would be
+  to verify this interface is being appropriately used.
+  
+  The difference betweenthis unit test, and the ones we wrote earlier is with
+  this test, we check that the unit iscorrectly implemented and adhere to the
+  expected interface contracts. Before, we were just verifying actual business
+  logic and/or rules.
+
+  This also implies that any error handling you implement on your own would need
+  to be tested at the unit level, too. What happens if nothing is found and
+  `blog` remains empty?
+
+  When testing at the integration level, we may or may not have our database
+  running during our test. Without mocking, this test would tell us that this
+  interface is being used by not only the units we wrote tests for earlier, but
+  also the thing that was stubbed out previously.
+
+- What if I wanted to verify that the response body contained the appropriate
+  values? How would I test that at the unit or integration level?
+
+  First, you'd do a similar unit test as mentioned earlier, is confirm that
+  the interface being used `c.JSON()` is correct. That way, if in the future,
+  a developer changes the response body to use a different interface, this
+  test would fail notifying the developer of a required code change needing
+  to be made, or they made a mistake themselves. TODO: VERIFY.
+
+  There is a design pattern called `middleware` used in many modern day web
+  frameworks that allow you to execute something before and/or after a specific
+  HTTP handler is called (the anonymous function we currently have for this
+  route). We could test two separate HTTP handlers with the same
+  `c *gin.Context` where we can expect and validate one of these middleware
+  functions to manipulate our context in a specific way. That would be an
+  example of a valid integration test.
+
+With all of that said, you can see that this code is not testable mostly due
+to the use of the anonymous function. The simple act of encapsulating
+like-functionality into their own modules or packages makes interfacing with
+them easier... and where there are interfaces, there is the capabiltiy to
+double/stub/mock!
 
 
 ### Unit Tests and Mocks
