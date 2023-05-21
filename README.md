@@ -76,6 +76,10 @@ comes secondary to the experience that is intended to be gained here.
     - [A Handful of Unit Tests](#a-handful-of-unit-tests)
     - [Unit Testing, Integration Testing, and Stubs I](#unit-testing-integration-testing-and-stubs-i)
     - [Unit Testing, Integration Testing, and Stubs II](#unit-testing-integration-testing-and-stubs-ii)
+- [A Major Refactor - Business and Software Architecture](#a-major-refactor---business-and-software-architecture)
+  - [Enterprise Architecture](#enterprise-architecture)
+  - [Onion Architecture](#onion-architecture)
+  - [SOLID Principals](#solid-principals)
     - [Unit Tests and Mocks](#unit-tests-and-mocks)
     - [A Simple Integration Test](#a-simple-integration-test)
     - [A Simple E2E Test](#a-simple-e2e-test)
@@ -2146,6 +2150,448 @@ to the use of the anonymous function. The simple act of encapsulating
 like-functionality into their own modules or packages makes interfacing with
 them easier... and where there are interfaces, there is the capabiltiy to
 double/stub/mock!
+
+# A Major Refactor - Business and Software Architecture
+
+I didn't intend for this to turn into a sort of tour of software design
+patterns and the nuances between business and software architecture, but it felt
+like a natural path to take when discussing the testability of code. So,
+here we are!
+
+We will cover these topics in this section:
+
+- Enterprise Architecture (think: business)
+- Onion Architecture (think: code)
+- SOLID Principles (more code)
+
+These are not mutually exclusive, and can actually compliment each other.
+The reason I'm introducing you to them at the same time is so you can see
+how they can enable each other.
+
+Before you continue, know that the context here starts from a very high level
+(in terms of software architecture and design), and gets incresingly lower
+level. Everything that is discussed here aids and enables the other sections.
+Imagine that we are looking at a big picture and slowly zooming in on the finer
+details of the image.
+
+## Enterprise Architecture
+
+From Wikipedia:
+
+> Enterprise architecture (EA) is a business function concerned with the 
+> structures and behaviors of a business, especially business roles and
+> processes that create and use business data. The international definition 
+> according to the Federation of Enterprise Architecture Professional
+> Organizations is "a well-defined practice for conducting enterprise analysis, 
+> design, planning, and implementation, using a comprehensive approach at all
+> times, for the successful development and execution of strategy. Enterprise
+> architecture applies architecture principles and practices to guide 
+> organizations through the business, information, process, and technology
+>  changes necessary to execute their strategies. These practices utilize the 
+> various aspects of an enterprise to identify, motivate, and achieve these
+> changes."
+
+From ChatGPT:
+
+Enterprise architecture is a software architecture pattern that focuses on the
+design and structure of large-scale enterprise-level systems. It provides a
+holistic and strategic approach to managing and aligning an organization's IT
+infrastructure, systems, applications, and processes with its business goals
+and objectives. The goal of enterprise architecture is to enable efficient and
+effective operation of an organization by facilitating the integration,
+interoperability, and scalability of its IT systems.
+
+At the code level, the principles of enterprise architecture translate into
+certain practices and patterns that promote modularity, scalability,
+reusability, and maintainability of the software systems within an organization.
+Here are some key aspects of enterprise architecture at the code level:
+
+Modular Design: Code is organized into modular components that encapsulate
+specific functionalities or features. Modules can be implemented as libraries,
+packages, or microservices. This modular design allows for better separation of
+concerns and promotes code reuse and maintainability.
+
+Service-Oriented Architecture (SOA): Systems are designed based on the
+principles of service-oriented architecture. Functionality is encapsulated
+as services that provide well-defined interfaces and can be independently
+developed, deployed, and scaled. Services communicate with each other through
+standardized protocols (e.g., REST, SOAP) and can be composed to build complex
+applications.
+
+API Design: Emphasis is placed on designing clean, well-documented APIs
+(Application Programming Interfaces) that enable interoperability and ease of
+integration between different systems and components. APIs provide a contract
+for communication and ensure consistency and compatibility.
+
+Standardization and Frameworks: Organizations establish coding standards, best
+practices, and frameworks that promote consistency, readability, and
+maintainability of the codebase. Standardized frameworks and libraries are used
+for common functionalities such as authentication, logging, database access,
+and error handling.
+
+Scalability and Performance: Code is designed with scalability and performance
+considerations in mind. Techniques such as caching, load balancing, asynchronous
+processing, and distributed computing are utilized to ensure the system can
+handle increased load and provide optimal performance.
+
+Data Management: Code follows best practices for data management, including
+proper database design, data access patterns (e.g., ORM frameworks), and data
+consistency and integrity mechanisms. Enterprise architecture may include
+guidelines for data governance, security, and compliance.
+
+Error Handling and Logging: Robust error handling and logging mechanisms are
+implemented to capture and handle errors effectively. Logging helps in
+troubleshooting, monitoring, and analyzing system behavior.
+
+Testing and Quality Assurance: Enterprise architecture emphasizes the importance
+of testing and quality assurance practices. This includes unit testing,
+integration testing, and other testing methodologies to ensure the reliability
+and correctness of the codebase.
+
+Continuous Integration and Deployment (CI/CD): Automation is applied to build,
+test, and deploy code changes. CI/CD pipelines are set up to ensure rapid and
+reliable delivery of software updates while maintaining quality and stability.
+
+So far, we can see that we have touched on a couple of these things already,
+all of which can be improved upon:
+
+- Modular Design
+
+    We have separated out some of our code, but we can do better
+    in this regard.
+
+- Service Oriented Architecture
+
+    We are focused on following REST principles for our API. We don't have
+    a lot of systems in this project (yet), but we have taken the first step
+    in building an API that can be consumed by other components, such as a
+    Web GUI, CLI, SDK, or another API, etc.
+
+- Standardization and Frameworks
+  
+    We are using existing open source tooling as opposed to rolling our own.
+    Sometimes it can't be helped that we have to build our own tools, but other
+    times, it is a calculated risk to depend on 3rd party software.
+
+- Data Management
+
+  Currently our data access pattern is driven by an ORM.
+
+- Testing and Quality Assurance
+
+    We've done a little bit on this, but are looking to improve this by
+    adhering to an architectural pattern.
+
+Key takeaways:
+
+- When designing software, we should be cognizant of how it will be used across
+  the business
+
+- Whether the business is large or small plays a factor in which shortcuts we
+  can take
+
+    We want to avoid over engineering our product as to not inhibit velocity,
+    as well to avoid complexity where it might not be necessary. Awareness
+    is important, especially if our product has the potential for integrating
+    with other services, or expanding the number of services offered.
+
+    Thankfully, this application will be very simple, but after the first
+    testing section and the context from this section, we are beginning to
+    understand why we need to improve our code and the implications that has
+    at the business level and the software level.
+
+## Onion Architecture
+
+At the end of the first testing section, we discussed ways to improve our code
+for the sake of testability. This section will introduce some deisgn patterns
+that enable us to do so. Let's meet the Onion Architecture (AKA Hexagonal
+Architecture).
+
+![Image - Onion Architecture](./docs/onion-architecture.webp)
+
+This pattern enforces the Dependency Inversion Principle (`DIP`), meaning
+high-level modules should depend on abstractions rather than concrete
+implementations. This should immediately make you think about `interfaces`.
+
+This architecture is often rendered in several different ways, but we will
+focus on the following layers:
+
+1. Domain Layer
+
+   Our `model` code lives in our domain layer. All business logic should be
+   executed here. State mutation and manipulation of our data should exist
+   here. All domain problem solving exists here.
+
+   The domain layer is unaware of other layers, it only exposes public methods
+   for use by higher level layers.
+
+2. Application Service Layer
+
+    The application service layer is designed to serve a client of some sort.
+    It is an interface to the domain layer in that the service exposes an
+    "operation" to a client, and the client can execute it. That operation
+    invokes code within the domain layer. That is, the application service layer
+    integrates and consumes the domain layer.
+    
+    We are writing a REST API, which is served via the HTTP protocol. So it
+    might make sense for us to have a layer between the application service
+    layer and the infrastructure layer, which we will call the controller layer.
+    This controller layer would consume the operations exposed by the service
+    layer.
+
+    1. Controller Layer
+
+        This layer recieves an HTTP request, and invokes our application service
+        layer to complete the client's request. This gives us separation such
+        that we can do things specific to the HTTP client
+
+    If we were writing a server-side CLI within the same codebase that would
+    be deployed within this docker container, you could think of it similarly
+    like this "Controller Layer", as it could also interface with this
+    appliaction service layer.
+    
+    For example, perhaps both the CLI and the REST API might be able to
+    execute the same operations--Boom, code reuse.
+
+    > Important: do not confuse this server-side CLI with a client-side CLI.
+    > The client-side CLI would exist in the presentation layer, and would
+    > communicate with our HTTP interface at the presentation layer.
+
+3. Infrastructure Layer
+
+    This code does not solve any domain problem. You can think of this as the
+    code that interacts with other services, such as our CRUD operations.
+    This is not an HTTP controller or server-side CLI that invokes the CRUD
+    operations, but instead, this is the actual code that queries the database
+    or external services.
+
+    You'll often see this code refered to as the `Repository Pattern`.
+
+    Operations exposed by this code is consumed by the service in order to
+    complete operations.
+
+4. Application / External Dependencies Layer
+
+    This use the user-facing application. It might be from a web interface
+    or a client-side CLI, or even an SDK. It could also be external services
+    that observe the application state (like log tracing). Essentially, anything
+    client-side.
+
+This is what our testing strategy might look like when adhering to this
+architectural pattern.
+
+![Testing Strategy - Onion Model](./docs/testing-strategy.webp)
+
+We will adapt our code to this pattern so that we can leverage the testing
+strategy shown. We could dive into this right now, but I think this last section
+will highlight some design principles that will enable us to do this well.
+
+Before we do, let's add cover one final bit of theory, as we continue our
+descending to the lower level.
+
+## SOLID Principals
+
+SOLID is a collection of five principles of software design, and is a topic
+introduced by Robert Martin in his book
+*Agile Software Development, Principles, Patterns, and Practices.*. There is an
+excellent reference at the end of this section that has code examples for
+each principle.
+
+TODO: include code examples here?
+
+1. Single Responsibility Principle (`SRP`)
+
+    > A class should have one, and only one, reason to change.
+    > –Robert C Martin
+
+    Code with the fewest responsibilities is least likely to change. This
+    is important when your code depends on code that might change outside
+    of your control.
+
+    Since Go is not an `OOP` language, we are left only with `interfaces` and
+    `packages`. Interfaces lend software to composition (over say, inheritence).
+    Packages are a means of collecting like functionality into a single
+    application. In Go, it might be appropriate to think that a package should
+    accomplish one thing, and one thing well. Packages that have many
+    responsibilities are subject to change without cause. Code that follows
+    `SRP` should be cohesive (with other code) but loosely coupled
+    (from other code).
+
+    An immediate codesmell in our codebase is the `pkg/utils` package. It
+    might be more adequate to move our `strings.go` utilities under a
+    `pkg/utils/strings` package so that it is obvious at a higher level what
+    the package is designed to accomplish. Perhaps even drop the term `utils`
+    entirely from the package name.
+
+    Now, I'd argue that a package can still be well designed if it introduces
+    many types and functionality around each are well isolated within the
+    package (`models`). It makes sense to keep these consolidated, because
+    we don't want to have to import a package for each model, that just seems
+    cumbersome in practice.
+
+    The next immediate codesmell is the anonymous HTTP handlers that we
+    discussed in detail in the first testing section. A combination of SOLID
+    principles and the Onion Arcitecture will improve this code
+    dramatically.
+
+2. Open / Closed Principle
+
+    > Software entities should be open for extension, but closed for modification.
+    > –Bertrand Meyer, Object-Oriented Software Construction
+
+    Since code should not change, it should at least be open to extension.
+    That can be done by embedding the original `type` that you want to change
+    under a new type, and overriding the functionality you wish to change.
+
+    Golang allows `types` shared within a package to access each others'
+    private members. This means that in addition to our ability to override,
+    we can also extend existing functionality by building upon it in our
+    overrides.
+
+3. Liskov Substitution Principle (`LSP`)
+
+    The Liskov Substitution Principle states that objects of a superclass
+    should be replaceable with objects of its subclasses without breaking the
+    program.
+
+    In other words, if a class A is a subtype of class B, then you should be
+    able to use an object of class A wherever an object of class B is expected,
+    and the program should still work correctly.
+
+    Go doesn't support inheritance, only interfaces, and they are
+    satisfied implicitly, rather than explicitly.
+
+    The author of the article I reference at the end of this section has this
+    to say about LSP:
+
+    ```go
+    // io.Reader
+    type Reader interface {
+            // Read reads up to len(buf) bytes into buf.
+            Read(buf []byte) (n int, err error)
+    }
+    ```
+
+    > *"Because io.Reader‘s deal with anything that can be expressed as a stream
+    > of bytes, we can construct readers over just about anything; a constant
+    > string, a byte array, standard in, a network stream, a gzip’d tar file,
+    > the standard out of a command being executed remotely via ssh."*
+
+    By adhering to the `LSP`, you can write code that is flexible and modular,
+    allowing you to interchange different implementations of `io.Reader` without
+    impacting the behavior of the code that consumes it. This promotes code
+    reusability and enables you to work with various data sources seamlessly.
+
+4. Interface Segregation Principle (`ISP`)
+
+    > Clients should not be forced to depend on methods they do not use.
+    > –Robert C. Martin
+
+    These code snippets are from the second article I reference below:
+
+    ```go
+    // s is useless
+    func addNumbers(a int, b int, s string) int {
+      return a + b
+    }
+    ```
+
+    Uselessness is less obvious when using structs:
+
+    ```go
+    type Database struct{ }
+    func (d *Database) AddUser(s string) {...}
+    func (d *Database) RemoveUser(s string) {...}
+
+    // d.RemoveUsers() is useless to this function
+    func NewUser(d *Database, firstName string, lastName string) {
+      d.AddUser(firstName + lastName)
+    }
+    ```
+
+    This usage of interfaces allows us to only specify what we need:
+
+    ```go
+    type DatabaseWriter interface {
+      AddUser(string)
+    }
+
+    type Database struct{}
+
+    func (d *Database) AddUser(s string) {
+      // Implementation of AddUser for Database
+      // Add user to the database
+    }
+
+    // NewUser creates a new user using the provided DatabaseWriter implementation
+    func NewUser(d DatabaseWriter, firstName string, lastName string) {
+      d.AddUser(firstName + lastName)
+    }
+
+    func main() {
+      db := &Database{} // Create an instance of Database
+      NewUser(db, "John", "Doe")
+    }
+    ```
+
+    In this example, `NewUser` accepts any implementation of `DatabaseWriter`,
+    including `Database`. When you call `NewUser` with an instance of `Database`,
+    it will invoke the `AddUser` method implemented in the `Database` type.
+
+    This allows you to use the `Database` type within the context of the
+    `NewUser` function while satisfying the requirements of the `DatabaseWriter`
+    interface.
+
+    Dave Cheny's take on `LSP`:
+
+    > The results has simultaneously been a function which is the most specific
+    > in terms of its requirements–it only needs a thing that is writable–and
+    > the most general in its function.
+
+
+5. Dependency Inversion Principle (`DIP`)
+
+    > High-level modules should not depend on low-level modules.
+    > Both should depend on abstractions. Abstractions should not depend on
+    > details. Details should depend on abstractions.
+    > –Robert C. Martin
+
+    Surprise, this principle is core to the Onion Architecture. `DIP` ultimately
+    means that the dependency graph should be asyclic. With regards to go,
+    this pertains to your packages.
+
+    From Cheny:
+
+    > All things being equal the import graph of a well designed Go program
+    > should be a wide, and relatively flat, rather than tall and narrow. If
+    > you have a package whose functions cannot operate without enlisting the
+    > aid of another package, that is perhaps a sign that code is not well
+    > factored along package boundaries.
+    >
+    > The dependency inversion principle encourages you to push the
+    > responsibility for the specifics, as high as possible up the import
+    > graph, to your main package or top level handler, leaving the lower
+    > level code to deal with abstractions–interfaces.
+
+Wow. With all of that said, I think it's time to put this knowledge to good use
+and see how we can reap the benefits!
+
+Key takeaways:
+
+- While a lot has been covered, it should be clear by now that composing our
+  application with as many clearly and well-defined units as possible at
+  the lower level will empower us in vastly many ways at the highest level
+
+  This will give us less error-prone, more reusable, and more testable code.
+  The more testable the code is, the less time we have to spend testing it
+  at a higher level. The more reusable and well written (exposed), the easier
+  it becomes to integrate with our product. This is the start of writing
+  sustainable, scalable code!
+
+References
+
+- [Dave Cheny - SOLID principles in Go](https://dave.cheney.net/2016/08/20/solid-go-design).
+- [Jack Lindamood - What Accept Interfaces, Return Structs Means](https://medium.com/@cep21/what-accept-interfaces-return-structs-means-in-go-2fe879e25ee8)
 
 
 ### Unit Tests and Mocks
