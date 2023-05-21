@@ -1,0 +1,16 @@
+#!/bin/bash
+set -eo pipefail
+
+main(){
+  # When initializing this environment, we require the tag of the image
+  # to be used in this environment.
+  if [ -z "$TAG" ]; then
+    echo "FATAL: TAG must be set!" 
+  fi
+
+  docker compose -f docker-compose.yml up -d
+
+  # TODO: implement a test runner and assert functionality.
+}
+
+main "$@"

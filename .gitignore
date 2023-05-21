@@ -1,1 +1,4 @@
 tmp
+coverage.html
+coverage.txt
+ci/kubernetes/api-deployment.yml

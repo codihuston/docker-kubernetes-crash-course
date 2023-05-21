@@ -44,7 +44,6 @@ comes secondary to the experience that is intended to be gained here.
 
 ## Table of Contents
 
-[Table of Contents]
 - [Purpose](#purpose)
   - [Disclaimers](#disclaimers)
   - [Prerequisites](#prerequisites)
@@ -80,9 +79,12 @@ comes secondary to the experience that is intended to be gained here.
   - [Enterprise Architecture](#enterprise-architecture)
   - [Onion Architecture](#onion-architecture)
   - [SOLID Principals](#solid-principals)
-    - [Unit Tests and Mocks](#unit-tests-and-mocks)
-    - [A Simple Integration Test](#a-simple-integration-test)
-    - [A Simple E2E Test](#a-simple-e2e-test)
+  - [The Refactor](#the-refactor)
+    - [Initializes an `Inversion of Control` container (`IoC`)](#initializes-an-inversion-of-control-container-ioc)
+    - [The database connection (no changes needed)](#the-database-connection-no-changes-needed)
+    - [Error Handling Middleware](#error-handling-middleware)
+    - [Controllers, Services, Repositories, and Testing](#controllers-services-repositories-and-testing)
+    - [Key Takeaways](#key-takeaways)
 
 ## How to Use
 
@@ -2594,24 +2596,216 @@ References
 - [Dave Cheny - SOLID principles in Go](https://dave.cheney.net/2016/08/20/solid-go-design).
 - [Jack Lindamood - What Accept Interfaces, Return Structs Means](https://medium.com/@cep21/what-accept-interfaces-return-structs-means-in-go-2fe879e25ee8)
 
+## The Refactor
 
-### Unit Tests and Mocks
+I refactored these all at once, because it seemed cleanest to do so. Compare
+the changes using git history.
 
-A mock actually verifies that the mocked out methods were called (a spy).
+Now, we will refactor the application into the following layers in the following
+order:
 
-TODO
+- Routers
+- Controllers
+- Services
+- Models (no changes needed)
+- Repositories
 
-### A Simple Integration Test
+Below, we discuss the following key changes or points of interests starting
+from [main.go](./api/main.go)...
 
-Let's say the requirements for this feature are to ignore *all*
-non-alphanumeric symbols.So, `!blue blue` should result in two counts of `blue`,
-and `re!d red` should result in two counts of `red`. It just so happens that
-we have two units that, when combined, can satisfy this requirement.
+### Initializes an `Inversion of Control` container (`IoC`)
 
-Let's 
+See [api/ioc](./api/ioc/container.go) and
+[pkg/logger](./api/pkg/logger/default.go).
 
-TODO
+The power of `IoC` is it allows you to decouple dependencies from their
+implementations. `IoC` is an implementation of
+`Dependency Inversion Principle (DIP)`.
 
-### A Simple E2E Test
+In this example, I am showing how we can implement our
+own `Logger` type, whose properties are defined by the `Logger` interface.
+The `IoC` container is initialized with a
+`logger := logger.NewDefaultLogger()`, and is passed throughout our
+application. That `ioc.logger` instance used directly from the `IoC`
+container when we want to log in the application.
+    
+In the case that we want to replace our logging dependency, say, in case
+a zero-day dependency is found in its source code ([log4j](https://www.cisa.gov/news-events/news/apache-log4j-vulnerability-guidance)), and a patch is not immediately
+available, we could replace our logger globally in only single place in
+code. Granted, you could probably do this without this pattern, but in
+this manner, we control the interface that our code is using in order to
+perform a log action.
 
-TODO
+An alternative to this pattern might be static class methods in an OOP
+language: `Logger::DEBUG()`. While this could offer the same ability to
+control the interface by which we are performing log actions, the `IoC`
+pattern decouples the `Logger` class from the rest of our code entirely.    
+
+### The database connection (no changes needed)
+
+One could argue that attaching the database connection to the `IoC`
+container might be worthwhile. This might be true, but it depends. I did
+not do so in this case in attempt to keep only specific layers of the
+application aware of the database connection--those that need it. In this
+case, the `Service Layer`. In this application, the service layer
+consists of the `Controllers and the Services`.
+
+For example, my `Domain Models` might need access to the logger, but
+definitely not the database connection.
+
+### Error Handling Middleware
+
+Here, we've centralized error handling for the HTTP requests by using
+our own Middleware. See [api/middleware/error_handler.go](./api/middleware/error_handler.go).
+
+Our repositories, models, and services might encounter errors (exceptions)
+that need to be handled. As a developer, we're coding these such that the
+errors will always bubble up and be handled by the controller. See
+`HandleAPIError()` in [api/controllers/controller.go](./api/controllers/controller.go)
+and [api/errors/errors.go](./api/errors/errors.go). This code is
+responsible for parsing known error types into user-appropiate messages and
+HTTP error codes as a custom `APIError` type. These are then consumed by
+the error handling middleware to return those values to the end-user in
+a meaningful way.
+
+For example, if a record is not found in our database, we parse the
+related PostgreSQL error into an `HTTP 404: record not found` response
+by using `gin` to set the appropriate headers, and our own response body,
+which is an implementation detail on its own.
+
+In your own API, you might consider formalizing your HTTP response body
+using something like [HATEOAS](https://en.wikipedia.org/wiki/HATEOAS#:~:text=Hypermedia%20as%20the%20Engine%20of,from%20other%20network%20application%20architectures) or
+[jsonapi](https://jsonapi.org/).
+
+### Controllers, Services, Repositories, and Testing
+
+You'll notice that the `Blog Controller` is initialized with the `IoC`
+container, `a Blog Service`, and a `Blog Repository`. The Blog Controller
+is now responsible for mapping an HTTP request to a Blog Service call.
+You'll also notice that the Blog Service is called with a repository
+instance as a parameter. This is an implementation detail chosen so that
+we can enable a specific testing pattern.
+
+Golang interfaces are implemented implicitly. This means that so long
+as some struct adheres to the interface ("matches the shape of"), it will
+be accepeted. This allows us to break what would be a large interface
+into a smaller, composed interface. See [api/repositories/blog_repository.go](./api/repositories/blog_repository.go).
+
+> Go Proverb: "Accept interfaces, return structs".
+
+The benefits of this enable us to have slimmer mocks. See [api/repositories/mocks/blog_repository.go](./api/repositories/mocks/blog_repository.go). We use this mock in
+the following test file: [api/services/blog_service_test.go](./api/services/blog_service_test.go).
+
+```go
+// api/services/blog_service.go
+func (s blogService) Create(m *dtos.CreateBlogRequest, r repositories.BlogCreator) (*models.Blog, error)    
+```
+
+This function signature allows us to pass in a mock repository with one
+function, `Create(...)`. If this interface was instead the whole
+entirety of the Blog Repository struct, as such:
+
+```go
+// api/repositories/blog_repository.go
+type BlogRepository interface {
+  BlogCreator
+  MultiBlogGetter
+  SingleBlogGetter
+  BlogUpdater
+  BlogDeleter
+}
+
+// api/servicesblog_service.go
+func (s blogService) Create(m *dtos.CreateBlogRequest, r repositories.BlogRepository) (*models.Blog, error)    
+```
+
+Then the mock used in our test file must have every method defined and
+implemented at that time in order to be used, even if we were testing
+just the `Create` method. They could simply return `nil`, but the
+`go philosophy` here is, if it is not relevant, don't require it. Go
+favors simplicity wherever possible.
+
+As a side effect of this specific pattern, we gain the ability to extend
+the functionality of the mock at any point in time if we wanted to, in
+case we wanted to force our `Service` down a specific code path. We can
+do this by defining the public method `MockCreate()` in the struct literal
+in our test file. This is what is referred to as `extensibility`, which is
+a superpower in golang if interfaces are used appropriately. Remember, code
+should be `closed for modification, but open for extensibility`. This
+pattern enables us to forego complex mocking definitions, maintenance,
+and even magical mock frameworks.
+
+For example, referring to the `HTTP 404` example we mentioned earlier,
+we can simulate testing a scenario where a record does not exist in our
+database, and expect the Blog Service to return the following error:
+`ERROR: duplicate key value violates unique constraint "blogs_title_key" (SQLSTATE 23505)`.
+If we had additional business logic in this layer, we could assert that
+behavior is as expected.
+
+If we assert that is true, then we might follow up with a new separate
+test for the `HandleAPIError()` method. We might call it with the above
+error, and verify that it returns an appropriate `APIError`. This verifies
+the integration between the error mentioned above.
+
+We could go further and actually load the Blog Route and Blog Controller
+themselves, where we mock out the Blog Repository to return the same error
+code, simulate sending an HTTP request to the `/create` endpoint, and
+verify the JSON response and HTTP response code are what we expect. This
+verifies the integration between the Blog Route, Blog Controller, Blog
+Service, Blog Repository, and error handling middleware are all functioning
+as expected.
+
+We can take this up to the final level, and actually run this test against
+a full blown HTTP Server (building and running our source code), and a
+running database, to verify that given a specific HTTP request, we receieve
+that specific HTTP 404 code. This verifies that the integration between
+the HTTP Server and the external database is valid.
+
+These are varying example of unit, integration, and E2E tests. The pattern
+used for our mocks is merely an example pattern that might make it easier
+and less cumbersome to write test code, and reduce repetitiveness in test
+code.
+
+> Important: the use of the testing loop in the Blog Service tests is just
+> an example. You could build whatever test behavior you wanted out of the
+> test loop, struct literal mocking, and assertion(s). However, this loop
+> pattern is recommended when many permutations need to be tested in order to
+> reduce as much repeat testing boilerplate. You would have one of these per
+> service method you are testing (e.g. `Update()`, `Delete()`).
+>
+> For example, instead of asserting that some error is true, you could expect
+> a specific error, etc.
+
+### Key Takeaways
+
+Feel free to verify that all of the previous `curl` commands work as expected.
+
+Key takeaways:
+
+- [Accepting interfaces, and returning structs](https://medium.com/@cep21/what-accept-interfaces-return-structs-means-in-go-2fe879e25ee8)
+- [Flexible Mocking for Testing in Go](https://medium.com/safetycultureengineering/flexible-mocking-for-testing-in-go-f952869e34f5)
+- Understand the benefit of the implicit interfaces as demonstrated with the
+  mock repository
+- Do not use a global `utils` package like demonstrated
+
+  Instead, determine exactly the purpose of what your function(s) are doing,
+  and create a standalone package (private or public) for them. Think about
+  the [net](https://pkg.go.dev/net) package vs [net/http](https://pkg.go.dev/net/http).
+  Notice how these closely related functionality is nested.
+
+  Keep your go idiomatic--keep it simple.
+
+- The existing go code is notably not utilizing the immutablity
+
+  For example, see this function signature in the blog service:
+
+  ```go
+  func (s blogService) Create(m *dtos.CreateBlogRequest, r repositories.BlogCreator) (*models.Blog, error)
+  ```
+
+  The return type is a pointer to a model instance. It is often recommended to
+  pass pointers only when necessary. This way, code on separate layers of the
+  application cannot modify instances in another (intended or not). Many will
+  argue that passing pointers 100% of the time is a means of optimization,
+  but that is a micro-optimization at best, unless your data model is absurdly
+  large.

@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-deployment
+  labels:
+    app: api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: db
+        image: postgres:15.3
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_PASSWORD
+          value: postgres
+        - name: POSTGRES_DB
+          value: blogger
+      # IMPORTANT: typically you would have automation/templating to inject
+      # the appropriate docker image tag here. This is the tag used when
+      # building the image earlier in the build pipeline.
+      - name: api
+        image: localhost:5001/company/api:{{ TAG }}
+        ports:
+        - containerPort: 8080
+        env:
+        - name: POSTGRESQL_URL
+          value: postgres://postgres:postgres@postgres-service:5432/blogger?sslmode=disable

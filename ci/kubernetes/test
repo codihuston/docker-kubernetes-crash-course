@@ -1,0 +1,26 @@
+#!/bin/bash
+set -eo pipefail
+
+main(){
+  local template_file
+  local api_deployment_file
+
+  api_deployment_file="api-deployment.yml"
+  template_file="templates/$api_deployment_file"
+
+  # When initializing this environment, we require the tag of the image
+  # to be used in this environment.
+  if [ -z "$TAG" ]; then
+    echo "FATAL: TAG must be set!" 
+  fi
+
+  # Copy the source template and overwrite the api image tag
+  cat "$template_file" | sed "s/{{ TAG }}/$TAG/g" > "$api_deployment_file"
+
+  # Apply all files within this directory
+  kubectl apply -f .
+
+  # TODO: implement a test runner and assert functionality.
+}
+
+main "$@"
