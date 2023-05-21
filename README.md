@@ -1821,6 +1821,7 @@ func TestWordCount(t *testing.T) {
 Run the test from the `api` directory on your workstation:
 
 ```bash
+# This command runs all tests recursively
 $ go test ./...
 ```
 
