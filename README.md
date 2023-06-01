@@ -85,6 +85,46 @@ comes secondary to the experience that is intended to be gained here.
     - [Error Handling Middleware](#error-handling-middleware)
     - [Controllers, Services, Repositories, and Testing](#controllers-services-repositories-and-testing)
     - [Key Takeaways](#key-takeaways)
+- [Kubernetes: An Introduction](#kubernetes-an-introduction)
+  - [The Problem With Scale](#the-problem-with-scale)
+    - [With Docker](#with-docker)
+    - [Docker Compose](#docker-compose-1)
+    - [Introducing Kubernetes](#introducing-kubernetes)
+  - [Developing for Kubernetes](#developing-for-kubernetes)
+  - [Kubernetes Architecture and Components](#kubernetes-architecture-and-components)
+    - [Control Plane Nodes](#control-plane-nodes)
+    - [Worker Nodes](#worker-nodes)
+  - [Kubernetes Primitives that Developers Care About](#kubernetes-primitives-that-developers-care-about)
+    - [Namespace](#namespace)
+    - [Service](#service)
+    - [Service Account](#service-account)
+    - [Role](#role)
+    - [RoleBinding](#rolebinding)
+    - [Deployments and Pods](#deployments-and-pods)
+      - [Init Containers](#init-containers)
+      - [Volumes](#volumes)
+      - [The Downward API](#the-downward-api)
+    - [ConfigMaps](#configmaps)
+  - [Secrets](#secrets)
+  - [Talking to the API Server: Kubectl](#talking-to-the-api-server-kubectl)
+  - [Debugging Kubernetes Resources](#debugging-kubernetes-resources)
+- [Deploying to Kubernetes](#deploying-to-kubernetes)
+  - [Prerequisites](#prerequisites-2)
+  - [Example CI Workflow](#example-ci-workflow)
+  - [Building Our API Docker Image](#building-our-api-docker-image)
+  - [Pushing our API Docker Image](#pushing-our-api-docker-image)
+    - [Run the Compose Environment](#run-the-compose-environment)
+      - [Cleanup](#cleanup)
+    - [Run the Kubernetes Environment](#run-the-kubernetes-environment)
+      - [Testing the Kubernetes Deployment](#testing-the-kubernetes-deployment)
+      - [Debugging the Kubernetes Deployment](#debugging-the-kubernetes-deployment)
+      - [Cleanup](#cleanup-1)
+  - [Analysis of Deployment Environments](#analysis-of-deployment-environments)
+- [What's Next?](#whats-next)
+    - [Other Points of Interest](#other-points-of-interest)
+  - [Kubernetes Operator Development](#kubernetes-operator-development)
+    - [Resources on Operator Development](#resources-on-operator-development)
+    - [High Level Complexities of an Operator](#high-level-complexities-of-an-operator)
 
 ## How to Use
 
@@ -2809,3 +2849,1548 @@ Key takeaways:
   argue that passing pointers 100% of the time is a means of optimization,
   but that is a micro-optimization at best, unless your data model is absurdly
   large.
+
+# Kubernetes: An Introduction
+
+As you continue reading, remember that the advent of containerization has
+led to a bit of a blur between the developer and operations roles. Suddenly,
+developers are following a "you build it, you deploy it" mantra, which results
+in us having to learn a bit more about systems than we might like. However,
+I find this empowering. Deployment is often a topic that developers might not
+think about at scale, because we don't have that expertise yet.
+Containerization and Kubernetes is changing that. I'll outline some perspective
+from both the developer and operations side of things, but in this lab, we are
+focused mostly with the "developer use" of containers and Kubernetes.
+
+In this section, we will take our application and deploy it into Kubernetes.
+Before we do, let's understand the problem that Kubernetes is trying to solve.
+
+## The Problem With Scale
+
+Docker and Docker Compose on its own are great at deploying a finite set of
+microservices in the form of containers that may or may not compose a larger
+service.
+
+### With Docker
+
+If we imagine that we're using only docker, and we have an application such
+as ours that might contain 2 or more services (containers), you can see that
+we will have some issues with scale. For example, assume we have the following:
+
+1. We created a docker network
+2. We created and run our database server (container)
+3. We created and run our API server (container)
+4. We are on a computer with a Public IP Address
+
+Let's say we're serving HTTP traffic on port 80, and forwarding that to our API
+Server. This might be a fine use case if we are hosting a very small application
+and do not expect a lot of traffic. However, imagine that our blog service is
+very popular now, and is performing very slowly when over 1000 people are
+reading blogs on our website. There are a few ways we can alleviate this:
+
+1. Allocate more resources to our containers
+2. Horizontally scale our application across multiple hosts (bare metal, virtual
+   machines)
+3. Horizontally scale our application on the same host, with more containers
+
+Perhaps the first option is not good enough because our application only
+runs on a handful of threads. Therefore, we might be hitting a bottleneck
+because no matter how much CPU or RAM we throw at the problem, only a percentage
+of that ends up being used.
+
+The second option might be viable, but now I must figure out how to route
+network traffic between multiple hosts. Also, I might not have the budget for
+another handful of servers, or perhaps I want to save as much as possible--why
+get another VM when I might only use a percentage of those resources? Not to
+mention, how will I deploy upgrades to this application to multiple servers?
+
+The third option seems interesting. It may solve the bottlenecking issue for
+my application if it is limited to a specific number of threads. I can utilize
+more resources on the container host this way as well, so I can save costs by
+using one VM still, but multiple instances of my application via multiple
+containers. However, the challenge with routing traffic between my multiple
+containers still exists as it did for the second option.
+
+So, I can spin up any number of Docker containers that host my application,
+but I would also want to configure a load balancer to route traffic between
+each of these instances. I would also need to hope that my session management
+(and other application state) is intelligent enough to deal with a scenario
+where the same user ends up on a different node (Read more about: JWT,
+sticky sessions).
+
+Perfect, so I've expanded my application architecture to be able to serve
+more traffic. This does, however, highlight some inefficiencies:
+
+- I need to manage docker containers manually, and at this point I have many
+
+  This can easily become a management nightmare. When a new version of our
+  docker container is available, how do we roll out the change? Bring down
+  and replace one container at a time? What if I have 50 containers?
+
+- This already existed before, but we've highlighted a single point of failure
+
+  If our load balancer goes down, then none of our application instances are
+  utilized appropriately. Not to mention this applies to the single database
+  that we're using.
+
+Let's keep these things in mind as we move forward.
+
+### Docker Compose
+
+Docker Compose allows us to define multiple services. So expanding horizontally
+might be as easy as adding any number of clones of our applications and
+adding a load balancer (or two) with a configuration pointing to those now
+statically defined services.
+
+This makes the management of bringing all of the services up and down at any
+given time, and overall this is more cohesive. However, all of the previous
+problems still exist in some fashion. For example, if I need to expand my
+application on demand, then I'd need to modify this compose file, update my
+load balancer config, bring up my new applications, and restart my load
+balancers.
+
+While this replaces the imperative nature of using the Docker cli with the
+declarative nature of Docker Compose, there is still some manual action here
+when it comes to scaling the number of services. This also does not address
+the distribution of our application across physical nodes, and the
+infrastructure and overhead associated with that (networking, storage, etc.).
+
+### Introducing Kubernetes
+
+Kubernetes is a container orchestration tool. It's basically the final form
+of Docker Compose.
+
+A great way to think of Kubernetes is it is a service that exposes an API that
+allows you to manipulate the state of a cluster. A cluster is a collection of
+nodes (hosts) that have Kubernetes components installed on them, which
+determines their role as either a Control Plane or Worker Node. A cluster's
+state is really consist of a series of primitives that are used to run,
+identify, and expose workloads to clients inside/outside of the cluster or to
+no one at all. We'll cover the Kubernetes architecture in a later section.
+
+Like Docker and Docker Compose, we can imperatively or declaratively
+(respectively) define a workload in a series of `kubectl` commands or Kubernetes
+Manifests, which use Kubernetes primitives such as `Pods`, `Deployments`,
+`Services`, `ServiceAccounts` to run, identify, and expose your workloads for
+consumption.
+
+However, the bonus here is that Kubernetes can be distributed across multiple
+physical nodes. It can easily scale a workload, such as our Application,
+natively. It can even automatically scale those horizontally using the
+[horizontal pod auto-scaler](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/)
+based on things like network activity and other resource usage. It automatically
+handles the networking in-cluster between our scalable application.
+
+With the appropriate infrastructure configuration (networking, etc.), Kubernetes
+can be made Highly Available, which solves the single point of failure we
+mentioned before--we can ensure that our application exists on our Kubernetes
+Nodes in US East, West, and Central, and so long as any of those nodes are
+accessible to the public internet, our application is available. If a region
+goes down, we might be able to route traffic to the other regions with the
+appropriate DNS configuration.
+
+The advent of containers, and the influx of microservice development and
+stateless applications (single-page apps, REST APIs), Kubernetes empowers us
+to scale the services used by end-users in a easily managable way. This also
+conforms well with the [gitops](https://about.gitlab.com/topics/gitops/)
+framework, in that we can now audit and track changes to production from
+a single source of truth. Gone are the days of someone making a change without
+a paper trail.
+
+I like to use an example of Youtube/Twitch.tv/Instagram Live/TikTok Live...
+Imagine a user is live, and what that entails on the back-end. Chances are those
+servers do not allocate many resources to just any user. As they become more
+popular, the amount of resources delegated to the processes maintaining that
+live session are dynamically provisioned/increased on-the-fly. This is
+scalability at its truest form. If we have tons of "READ" requests coming in,
+it makes sense to spawn more applications to be able to serve that payload.
+This is where something like Kubernetes shines.
+
+Prior to Kubernetes, things like [AWS' AutoScale Group (2009)](https://docs.aws.amazon.com/autoscaling/ec2/userguide/auto-scaling-groups.html)
+existed, which basically did what Kubernetes did, but with whole
+Virtual Machines instead. This is subject to the same limitations as the Docker
+example was, as well as all of the infrastructure and network logistics and
+implications. This is still a popular service today, especially if you are
+serving a traditional monolithic application. This could work just as well
+serving containers as well. There are other, likely cheaper services for such
+scenarios like [AWS Elastic Beanstalk](https://aws.amazon.com/elasticbeanstalk/)
+and [AWS Fargate](https://aws.amazon.com/fargate/) (serverless).
+
+You might have noticed that I mentioned that Kubernetes is very popular
+for stateless applications. This is because statefulness in Kubernetes was not
+well supported until recent years. Statefulness is important for services
+that depend on [persistent storage](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/),
+like databases. This includes things like networking ids or when a workload
+might depend on an explicit order of execution. These things are very hard
+problems to solve in distributed systems like Kubernetes, where they might
+come a little more naturally in the old-school world. They come with lots of
+overhead and complexity that makes them intimidating to use. A vast
+understanding of infrastructure and operations and systems administration is
+recommended before utilizing these in any serious capacity. However, you are
+able to experiment with them out-of-box. That said, I believe the tech has
+progressed enough to the point that you can safely make use of `StatefulSets`
+in production today, with the correct knowledge. It is very common to have your
+database completely outside of Kubernetes.
+
+Kubernetes has a lot of components and integrations that change how things
+work under-the-hood. This ranges from storage drivers, network plugins, and
+more. You can harden your cluster using [network policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/),
+[pod security admissions](https://kubernetes.io/docs/concepts/security/pod-security-admission/), and [gatekeeper](https://github.com/open-policy-agent/gatekeeper).
+Of course, there are even different flavors of Kubernetes, such as [Rancher](https://www.rancher.com/)
+and [OpenShift](https://www.redhat.com/en/technologies/cloud-computing/openshift),
+that have their own problems and quirks that they are trying to solve. Both aim
+to be enterprise-grade Kubernetes.
+
+One of the most powerful aspects of Kubernetes is the ability to [extend Kubernetes yourself](https://kubernetes.io/docs/concepts/extend-kubernetes/),
+particularly the Kubernetes API. You can do this by creating your own
+[Kubernetes Controller](https://kubernetes.io/docs/concepts/architecture/controller/).
+A Controller is an application that hooks into the Kubernetes Event Lifecycle
+and empowers you to react to them. You can take this a step further and
+develop a [Kubernetes Operator](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/),
+which is just a Kubernetes Controller that manages Kubernetes primitives, or
+even *your very own primitives*. If your product is complex to deploy in
+Kubernetes, and/or if you want to empower others to be able to deploy your
+application in Kubernetes, you might opt for an Operator.
+
+You can take this to the next level by packaging your Operator with
+[Operator Lifecycle Manager](https://olm.operatorframework.io/). These types
+of operators are especially useful for Day 0, 1, and 2 Operations. You can
+empower cluster administrators to automate the management and day-to-day of your
+product with as little manual interaction as possible. Think upgrades, backups,
+etc. See more about the [Operator Capability Levels](https://sdk.operatorframework.io/docs/overview/operator-capabilities/).
+
+Now that we understand the problems that Kubernetes is trying to solve, let's
+get our hands dirty with it.
+
+## Developing for Kubernetes
+
+Thankfully, if your application is containerized, and a stateless microservice,
+then your application is already ready for Kubernetes. That is the case
+with our application.
+
+Microservices typically consist of a docker container that runs a
+single process--this is not a strict requirement, but definitely heavily
+recommended. They are composed together to create a larger service. This
+could be a collection of messaging systems, point-of-sales, reporting,
+e-commerce front-ends for end-user, and much more. This also means that you
+can develop a single microservice without requiring the other services to
+exist during your development cycle. If you know how your application expects
+to interface with other services, then you can just mock those out and ensure
+that you implement automated testing for integration of those ends at a later
+date--this means your team can focus on a specific part of the product.
+
+Now, I wouldn't recommend that you develop your application directly *within
+the context* of a Kubernetes cluster. For example, that workflow for this
+project would look like the following:
+
+1. Code
+2. Build our binary
+3. Build the binary into a docker image
+4. Push the image to an image registry
+5. Deploy the application into Kubernetes
+6. Test the application manually
+
+There isn't really a way for us to do a sort of hot-reloading experience for
+languages that support it, or a sort of file system watcher that triggers a
+redeployment when developing an application within Kubernetes itself. Every
+change will require a new docker image to be built. That is terribly inefficient
+not only for developer feedback, but also with regards to your system storage.
+That said, there are tools like [skaffold](https://skaffold.dev/) that
+empower this workflow. Things like React's hot-reloading may not be supported
+depending on whether you can appropriately map the source code on your host
+to a volume in your deployed container. IMO It's just not worth it.
+
+Instead, I thoroughly recommend you develop your application in Docker Compose.
+If your brave, you can consider developing in [Podman Pods](https://developers.redhat.com/blog/2019/01/15/podman-managing-containers-pods)
+(which are closer to Kubernetes)--though I don't think developing with Podman
+in that fashion is quite ready in terms of Developer Experience
+(Quality of Life). Any assumptions that need to be made can be made at the
+environment or volume mount level, our by mocking or deploying necessary
+external services within your compose file.
+
+If you need to develop against the Kubernetes API, there isn't really a need to
+develop solely within the Kubernetes cluster (that I know of), as the Kubernetes
+API is accessible both within and outside of the cluster. Simply create
+a [ServiceAccount](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/),
+[grant it the appropriate permissions](https://kubernetes.io/docs/reference/access-authn-authz/rbac/),
+and [retrieve the authentication token](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#manually-create-an-api-token-for-a-serviceaccount),
+and plug that into your application as needed.
+
+## Kubernetes Architecture and Components
+
+You can read more about here: [Kubernetes Architecture](https://kubernetes.io/docs/concepts/architecture/).
+Here is a rundown on [Kubernetes Components](https://kubernetes.io/docs/concepts/overview/components/).
+I won't detail the specifics (Infrastructure / Operations) perspective of these
+components, but just enough for a developer to have the decent picture of
+"what a Kubernetes Cluster is"...
+
+![Image - Kubernetes Components](./docs/components-of-kubernetes.svg)
+
+When Kubernetes is installed on a host, it installs components and configuration
+that make it either a `Control Plane Node`, or a `Worker Node`.
+
+### Control Plane Nodes
+
+The Control Plane refers to all Control Plane Nodes. Between each of them exists
+an instance of:
+
+- `etcd`
+
+    A distributed database that stores "cluster state". Cluster state refers
+    to the state of our workloads, the instances of Kubernetes Primitives
+    like `Deployments`, `Pods`, `Services`, `ServiceAccounts`, `Namespaces`,
+    `Secrets`, `ConfigMaps`, and many, many more. It also contains
+    recorded events between these objects.
+
+- `kube-apiserver`
+
+    You, and a ton of automation, will communicate with this server. You
+    can create and maintain instances of the aformentioned primitives. You
+    will do most of this using `kubectl`, the [Kubernetes REST API](https://kubernetes.io/docs/reference/using-api/),
+    or an [SDK](https://kubernetes.io/docs/reference/using-api/client-libraries/).
+
+    Much of the automation in Kubernetes will constantly query the API Server
+    and verify that the Server State is "as desired". This is called a
+    reconciliation (or control) loop. A Kubernetes Controller executes such a
+    loop. One example of a Kubernetes Controller is the `Deployment Controller`,
+    responsible for maintaining state of [Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/).
+    That is, when changes are issued to the state of the cluster via use of
+    its APIs (such as creating a `Pod`, etc.), these controllers will work until
+    that new desired state is achieved.
+
+    Every primitive has their own controller and comes preinstalled in the
+    cluster via the [Kubernetes Controller Manager](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/)
+
+- `kube-scheduler`
+
+    Once a primitive, such as a `Pod` has been created, the scheduler is
+    responsible for identifying such an entity that is not currently assigned
+    to a `Worker Node`, and scheduling its deployment to a `Worker Node`
+    within the cluster.
+
+    You can use [Taints and Tolerations](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/)
+    to tell the Scheduler to place/avoid a workload on specific `Worker Node`.
+
+    A `Pod` may not be scheduled for security reasons, such as
+    [Pod Security Admissions](https://kubernetes.io/docs/concepts/security/pod-security-admission/),
+    [Security Context Constraints](https://docs.openshift.com/container-platform/4.8/authentication/managing-security-context-constraints.html),
+    or issues with the [Worker Node](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/#taint-based-evictions),
+    especially if there are no Nodes available for scheduling.
+
+    If a `Pod` is not scheduled, it is never executed, thus there are no
+    logs associated with its containers. You must investicate events related
+    to the `Pod` or its parent `Deployment` or `ReplicaSet`.
+
+### Worker Nodes
+
+The primary components installed on these nodes are:
+
+- `kubelet`
+
+   This is an agent that is registered with the API Server, and is responsible
+   for watching container state on the localhost via its parent `PodSpec`.
+   It is responsible for ensuring that Pod containers are healthy. It interfaces
+   with a [container runtime](https://kubernetes.io/docs/setup/production-environment/container-runtimes/),
+   such as `containerd`, `CRI-O`, `Docker Engine` etc.
+
+   While you are mostly familiar with interfacing with containers via `docker`,
+   you can actually use a CLI for these runtimes to directly manage a
+   container if you wanted. For example, if you had root access to a Kubernetes
+   Worker node, but not the Kubernetes Cluster, you could still get into the
+   container via the runtime!
+
+   Generally, container images and runtimes will adhere to the [Open Container Initiative](https://opencontainers.org/)
+   and [Specification](https://github.com/opencontainers/image-spec), which
+   enable folks put their own flavor into how containers work. A great example
+   of this is the battle between `Docker` and `Podman`. Podman secures
+   containers at runtime, in that you can ensure they run as a `rootless user`,
+   so in case a container is compromised at runtime, and if the user breaks
+   out of the container, it does not have root privileges on the host. There is
+   more nuance here, such as access to storage, network, and more. Many
+   Docker images are built to run as root users. This is a security concern that
+   appears to be largely ignored by pretty much every normie out there.
+
+   See more about [Rootless Docker](https://docs.docker.com/engine/security/rootless/)
+   and [Rootless Podman](https://developers.redhat.com/blog/2020/09/25/rootless-containers-with-podman-the-basics).
+
+- `kube-proxy`
+
+   This is responsible for networking between `Pods` and `Worker Nodes`. If
+   you're curious as to how a container on one Kubernetes Worker Node might
+   communicate with a separate container on another Kubernetes Worker Node, this
+   is your answer. This manages the network traffic between these.
+
+   Kube Proxy can be configured with different plugins which change underlying
+   functionality, might also enable/extend additional Kubernetes primitives
+   related to networking, such as [Network Policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/).
+   You can use these policies to deny/allow traffic to/from whever you want.
+
+Now that you have an idea of "what and how" a Kubernetes Cluster is, let's talk
+about what we care about.
+
+## Kubernetes Primitives that Developers Care About
+
+Every application will likely consist of the following primitives: 
+
+1. Namespace
+1. Service
+1. Service Account
+2. Role
+3. RoleBinding
+4. Deployment Spec
+   1. Pod Spec: your containers go here!
+
+Other primitives that are very common that developers should be aware of are:
+
+1. Secrets
+2. ConfigMaps
+
+These are typically used for configuring your Pod's containers via Environment
+Variables.
+
+If you are deploying your application to a Kubernetes Cluster, and it needs
+to be accessed from outside your private network (i.e. your application is
+public/internet-facing), you will want an Ingress Controller--yes these are
+different products:
+
+1. [ingress-nginx](https://github.com/kubernetes/ingress-nginx)
+1. [NGINX Ingress Controller](https://docs.nginx.com/nginx-ingress-controller/)
+2. [Traefik](https://github.com/traefik/traefik)
+
+These things are responsible for routing traffic into and outside of your
+cluster. They will also typically terminate TLS/SSL.
+
+The remaining primitives that you are less likely to come upon:
+
+1. StatefulSets
+2. PersistentVolumes
+3. PersistentVolumeClaims
+
+These are used mostly when static storage is needed for things like databases
+or applications that persist data (blobs, object storage, etc.)
+
+### Namespace
+
+You can use [Namespaces](https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/)
+to group Kubernetes resources. Some resources, such as `ClusterRole` and
+`ClusterRoleBinding` are cluster-wide resources. These do not get deployed into
+a namespace. However, the following are namespace scoped resources: `Service`,
+`Pod`, `Deployment`, `ReplicaSet`, and pretty much everything lised in the
+above section.
+
+A Namespace is *not* a secure boundary between Kubernetes resources, but it
+does have *some* security aspects. For example, you can grant separate teams
+full reign on different namespaces (CRUD Kubernetes resources), but not each
+others'. Notably the fact that networking across namespaces isn't
+restricted by default. Anyone could create a `Service` pointing to someone else's
+applications in-cluster, given they can identify their applications' labels.
+Again, traffic could be restricted with [Network Policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/).
+
+### Service
+
+If you need to enable the ability to route network traffic to your application,
+then you need a [Service](https://kubernetes.io/docs/concepts/services-networking/service/).
+
+A `Service` can route internet traffic to a set of `Pods`. This set is created
+via `Labels`. A `Label Selector` is defined under the `spec.selector` field.
+Any `Pod` that has that label in its own PodSpec under: `spec.metadata.labels`
+will be added to this set.
+
+A Service can have [many types](https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types),
+but you'll primarily use `ClusterIP` or `LoadBalancer`, depending on whether
+you want the service to be accessible inside or outside the cluster
+respectively. The `LoadBalancer` type is almost never usable out-of-box when
+using Kubernetes locally. That type is usually extended upon by Cloud Providers,
+allowing them to allocate public IP Address(es) (out-of-cluster) to your
+service. You might be able to get away with [Ingress with KinD](https://kind.sigs.k8s.io/docs/user/ingress/)
+and `Ingress with Kubernetes in Docker Desktop`. These typically only enable
+you to use `localhost` on your workstation to connect to your application
+without using [kubectl port-forward](https://kubernetes.io/docs/tasks/access-application-cluster/port-forward-access-application-cluster/).
+Otherwise, if you want to expose Kubernetes on your own private network, you'll
+want to use something like [MetalLB](https://metallb.universe.tf/) to enable
+this type.
+
+A service is a namespace scoped resource. When created, it recieves a
+`CNAME` record via [kube-dns](https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/),
+that takes the form of `<service name>.<namespace>.svc.cluster.local`.
+
+For example, the following service would exist under a namespace called `prod`:
+
+```
+my-service.prod.svc.cluster.local
+```
+
+Your containers can then resolve DNS to that service using this hostname.
+Depending on how the service is configured, it will route traffic to the
+`Pods` that match its `Label Selector`.
+
+For example, your application might listen on port `3000` by default. If I
+want clients to be able to connect to my application on port `80`, I can
+use the following rules
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+  namespace: development
+spec:
+  selector:
+    app.kubernetes.io/name: MyApp
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
+```
+
+With a service configured as such, and given my application container is
+running on port `80` within a `Pod` with the label `app.kubernetes.io/name: MyApp`,
+I can access it from anywhere within the cluster as such:
+
+```bash
+# Port 80 is used by default in http requests
+$ curl http://my-service.development.svc.cluster.local
+```
+
+Likewise, if `port` was not `80`, but instead `8080`, then I would append
+`:8080` to the above URI.
+
+### Service Account
+
+Identity is one of those things that you'll encounter everywhere, and it's
+completely possible that it is of no use to you. However, identity is important
+because with appropriate auditing, we can tell a story about a situation. We
+can also permit an identity capaibilities to do things (RBAC). In Kubernetes, a
+[ServiceAccount](https://kubernetes.io/docs/concepts/security/service-accounts/)
+is an identity that is ultimately attached to your workload at the `Pod` level.
+
+It can be namespace or cluster scoped. When a namespace is created, a `default`
+service account is also created in that namespace. `Pods` deployed into that
+namespace that do not have a `spec.serviceAccountName` defined, will
+automatically use the `default` service account within said namespace. This
+is often fine, because for most applications, the service account does not
+need permissions to "do things". In cases when a service account does need to do
+things, it will often be authenticating to the Kubernetes API to execute
+operation within the cluster. To do that, you would need to [create the service account token](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/),
+then code your application to [use it](https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/#serviceaccount-admission-controller) in its requests to the Kubernetes API.
+
+Most of the time, you can ignore the use of a `ServiceAccount` and use the
+`default` service account.
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: my-service-account
+  namespace: default
+```
+
+### Role
+
+Last section, we mentioned how we can permit `ServiceAccounts` permissions to
+execute operations on the Kubernetes API via [Role-Based Access Control](https://kubernetes.io/docs/reference/access-authn-authz/rbac/).
+We use a `Role` to define a set of verbs that this role can act on (verbs).
+
+This is a namespace scoped resource. See `ClusterRole` for cluster-wide roles.
+Members of cluster-wide roles can execute the permitted actions against the
+delegated resources across any namespace.
+
+For example, the following role would allow members of this role to execute
+`get`, `watch`, and `list` actions against the `Pod` resources in our cluster.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: default
+  name: pod-reader
+rules:
+- apiGroups: [""] # "" indicates the core API group
+  resources: ["pods"]
+  verbs: ["get", "watch", "list"]
+```
+
+However, on its own, Roles are useless without members.
+
+### RoleBinding
+
+[RoleBindings and ClusterRoleBindings](https://kubernetes.io/docs/reference/access-authn-authz/rbac/#rolebinding-and-clusterrolebinding)
+grant membership to a specific `ServiceAccount` or `User` to a specific `Role`
+or `ClusterRole`.
+
+As a developer, you'll likely only ever need to worry about granting membership
+to a `ServiceAccount`.
+
+The example below will grant the service account `my-service` the `pod-reader`
+role.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+# This role binding allows "jane" to read pods in the "default" namespace.
+# You need to already have a Role named "pod-reader" in that namespace.
+kind: RoleBinding
+metadata:
+  name: read-pods
+  namespace: default
+subjects:
+# You can specify more than one "subject"
+- kind: ServiceAccount
+  name: my-service # "name" is case sensitive
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  # "roleRef" specifies the binding to a Role / ClusterRole
+  kind: Role #this must be Role or ClusterRole
+  name: pod-reader # this must match the name of the Role or ClusterRole you wish to bind to
+  apiGroup: rbac.authorization.k8s.io
+```
+
+You can impersonate a `User` or `ServiceAccount` to test their API access using
+the [kubectl can-i](https://kubernetes.io/docs/reference/access-authn-authz/authorization/#checking-api-access).
+
+```bash
+$ kubectl auth can-i list pods \
+	--namespace default \
+	--as system:serviceaccount:default:my-service-account
+# outputs: yes | no
+```
+
+### Deployments and Pods
+
+Finally, the thing we care about most is `Deployments` and `Pods`. Let's start
+with `Pods`. Both of these are namespace scoped.
+
+From the docs:
+
+> *[Pods](https://kubernetes.io/docs/concepts/workloads/pods/) are the smallest deployable units of computing that you can create and manage in Kubernetes*. 
+
+Here is an example [PodSpec](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.26/#podspec-v1-core):
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx
+spec:
+  containers:
+  - name: nginx
+    image: nginx:1.14.2
+    ports:
+    - containerPort: 80
+```
+
+This is a pod that deploys a [container](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.26/#container-v1-core)
+on port `80` of the pod itself. This also means that the port that our
+application is listening on should be port `80`. If our application listens
+on a different port, we would want `containerPort` to match accordingly.
+
+When configuring a service for this pod, we want the `targetPort` in our
+service to point to this same value as `containerPort`. In the service, the 
+`port` value in the service would be the external port that we want end-users
+inside or outside of the cluster to use to access our application. Typically
+that would be `80` or more preferrably `443`, but that depends on whatever
+application you're hosting. You *could* say services expose ports similarly to
+how `docker` exposes and maps ports to the container host if that helps.
+
+Pods, however, are mostly [immutable](https://kubernetes.io/docs/concepts/workloads/pods/#pod-update-and-replacement).
+If you want to change immutable fields, the pod must be deleted and recreated.
+However, doing that maintenance manually is not ideal. Thus, we have
+`Deployments`.
+
+[Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
+are a higher abstraction of [ReplicaSets](https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/),
+which try to maintain a stable set of pods at any given time. A deployment is
+a *desired state* that we want the cluster to achieve. A deployment has its own
+[spec](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.26/#deployment-v1-apps)
+which includes a [PodSpec](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.26/#deploymentspec-v1-apps)
+among other things. Deployments empower us to scale a PodSpec horizontally
+with almost zero effort. 
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels:
+    app: nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec: # <--- from here, this is a normal pod template spec: https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.26/#podtemplatespec-v1-core
+      containers:
+      - name: nginx
+        image: nginx:1.14.2
+        ports:
+        - containerPort: 80
+```
+
+You can see above that this will deploy 3 Pods that adhere to the given PodSpec.
+This is the power of Kubernetes. Recall how difficult it was for us to
+horizontally scale our applications in Docker and Docker Compose? With
+Kubernetes, it really is a matter of changing the deployment's `spec.replicas`
+count. So long as we have a `Service` in front of these pods, traffic to these
+pods will be load balanced between these 3 pods without us needing to setup and
+configure our own load balancer and figuring out how to manage that component
+of our architecture.
+
+We could even improve upon this by deploying a [Horizontal Pod Autoscaler](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/)
+to automatically increase or decrease our total number of replicas depending
+on resource utilization like `CPU`. We could even get fancy and make this even
+smarter based on [custom metrics](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/#scaling-on-custom-metrics).
+Think about how cost effective this could be!
+
+Most of the time, you won't go as far as auto-scaling, but it's worth the food
+for thought.
+
+#### Init Containers
+
+A pod can have a series of [init containers](https://kubernetes.io/docs/concepts/workloads/pods/init-containers/#detailed-behavior)
+defined that might need to do some initial setup before the rest of the
+containers can be started. These types of containers typically run to completion
+and whether or not they succeed depends on whether the rest of the pod can boot.
+They are executed in the order that they appear in the PodSpec.
+
+Usecases for this might include, but is not limited to:
+
+1. Registering a distributed application with its peers
+1. Fetching an identity token from a provider
+1. Fetching credentials and stashing them for other containers
+
+#### Volumes
+
+Just like in Docker, you can specify [volumes for your container](https://kubernetes.io/docs/concepts/storage/volumes/).
+This is a very complex topic, and I won't get into details about external
+storage driver options. However, sometimes it is common to share files between
+containers in a pod. You can do so with a memory-backed [emptyDir volume](https://kubernetes.io/docs/concepts/storage/volumes/#emptydir)
+in a pinch. This foregos all of the complexity behind network attached storage.
+Usecases for this include sharing short-lived data between containers.
+
+#### The Downward API
+
+The [Downward API](https://kubernetes.io/docs/concepts/workloads/pods/downward-api/)
+allows you to pass metadata about your pod into your containers via environment
+variables or files. This is very useful if your application needs to be
+self-referential, and needs to know things like the pod name, ip address,
+resource limits, and more.
+
+### ConfigMaps
+
+[ConfigMaps](https://kubernetes.io/docs/concepts/configuration/configmap/) are
+simple key-value stores that you can use to pass configuration to pods. It can
+contain arbitrary string data, or even binary data. The benefit of this is
+solely the ability to consolidate configuration in one place, and to make it
+available to many pods.
+
+ConfigMaps helps to keep things [DRY](https://en.wikipedia.org/wiki/Don%27t_repeat_yourself),
+but is not always the answer (see the next section). **Do not use these for
+information that needs to be secure (credentials)**. ConfigMaps are typically
+injected into pods by mapping them into environment variables, however,
+there are other ways to use a ConfigMap, such as [mounting them as volumes and creating files from them](https://kubernetes.io/docs/concepts/configuration/configmap/#using-configmaps-as-files-from-a-pod).
+
+> IMPORTANT: ConfigMaps consumed as environment variables are not updated
+> automatically and require a pod restart. Mounted ConfigMaps are updated
+> automatically.
+
+From the docs, this is what a `ConfigMap` looks like:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: game-demo
+data:
+  # property-like keys; each key maps to a simple value
+  player_initial_lives: "3"
+  ui_properties_file_name: "user-interface.properties"
+
+  # file-like keys
+  game.properties: |
+    enemy.types=aliens,monsters
+    player.maximum-lives=5    
+  user-interface.properties: |
+    color.good=purple
+    color.bad=yellow
+    allow.textmode=true    
+```
+
+From the docs is an example of using a ConfigMap both for environment variables
+and mounting as a file:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: configmap-demo-pod
+spec:
+  containers:
+    - name: demo
+      image: alpine
+      command: ["sleep", "3600"]
+      env:
+        # Define the environment variable
+        - name: PLAYER_INITIAL_LIVES # Notice that the case is different here
+                                     # from the key name in the ConfigMap.
+          valueFrom:
+            configMapKeyRef:
+              name: game-demo           # The ConfigMap this value comes from.
+              key: player_initial_lives # The key to fetch.
+        - name: UI_PROPERTIES_FILE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: game-demo
+              key: ui_properties_file_name
+      volumeMounts:
+      - name: config
+        mountPath: "/config"
+        readOnly: true
+  volumes:
+  # You set volumes at the Pod level, then mount them into containers inside that Pod
+  - name: config
+    configMap:
+      # Provide the name of the ConfigMap you want to mount.
+      name: game-demo
+      # An array of keys from the ConfigMap to create as files
+      items:
+      - key: "game.properties"
+        path: "game.properties"
+      - key: "user-interface.properties"
+        path: "user-interface.properties"
+```
+
+## Secrets
+
+[Secrets](https://kubernetes.io/docs/concepts/configuration/secret/) are similar
+to ConfigMaps, but are intended to hold secure data, like credentials. However,
+these are not inherently secure as described in the docs:
+
+> Kubernetes Secrets are, by default, stored unencrypted in the API server's underlying data store (etcd). Anyone with API access can retrieve or modify a Secret, and so can anyone with access to etcd. Additionally, anyone who is authorized to create a Pod in a namespace can use that access to read any Secret in that namespace; this includes indirect access such as the ability to create a Deployment.
+>
+> In order to safely use Secrets, take at least the following steps:
+>
+> 1. Enable Encryption at Rest for Secrets.
+> 1. Enable or configure RBAC rules with least-privilege access to Secrets.
+> 1. Restrict Secret access to specific containers.
+> 1. Consider using external Secret store providers.
+>
+> For more guidelines to manage and improve the security of your Secrets, refer to Good practices for Kubernetes Secrets.
+
+Therefore, it is typically recommended to use an external Secrets Manager to
+manage your secrets.
+
+## Talking to the API Server: Kubectl
+
+This is a lab in and of itself, but I'll leave this [cheat sheet](https://kubernetes.io/docs/reference/kubectl/cheatsheet/)
+here for you. I refer to it often.
+
+## Debugging Kubernetes Resources
+
+If you have issues getting a Kubernetes resource to deploy properly, I always
+recommend the following with `kubectl`
+
+1. Describing the resource (deployments, pods, etc.) `kubectl describe pod my-pod`
+
+   > Note: sometimes if a pod is not scheduling, try describing the associated
+   > deployment and replicaset.
+
+2. Listing events in the namespace: `kubectl get events -n my-namespace`
+3. Logging a Pod's containers: `kubectl logs my-pod` (default container), or `kubectl logs my-pod -c my-container` (specific container)
+
+# Deploying to Kubernetes
+
+In this section, we'll take the steps that we would do similary in a
+Continuous Integration pipeline (Jenkins, Travis CI, Circle CI, Argo CD --
+which is a collection of tools that includes CI).
+
+> Note: this document intentionally does not cover Continuous Delivery. However,
+> this typically consists of commiting production-ready manifests or artifacts
+> to a repository, and triggering your production servers to update their state
+> to read from them. This is a part of the gitops philosophy.
+
+Typically in CI, you would deploy your application in varying ways and run tests
+against it. We typically refer to these varying deployments as "environments".
+For example, we might have a series of tests for a Docker Compose environment,
+and others for a Kubernetes environment for the same product.
+
+> Important: it is ideal to enable developers to be able to rely, run, and use
+> any CI environments locally. Sometimes this is not always the case if we
+> require external services to be running. In those cases, it should be obvious
+> to the developer, and alternatives should be presented, like a local dev
+> configuration using a similar third party service in place of one in CI.
+> For example, `open-ldap` vs `Active Directory` in `AWS` or `Azure`.
+
+Before we continue, let's get our prerequisites in order. Let's get started.
+
+## Prerequisites
+
+Before we can continue, ensure you've installed the
+[prerequisites](#prerequisites) before continuing.
+
+1. Obtain a Kubernetes Cluster
+2. Configure an Image Registry
+
+You can kill both birds with one stone as per the [KinD with Registry documentation](https://kind.sigs.k8s.io/docs/user/local-registry/),
+or you can use my [scripts provided in github](https://github.com/codihuston/kind-with-registry).
+
+I will deploy a Kuberetes Cluster v1.26 and image registry using a script
+from the above repository:
+
+```bash
+$ ./kind-with-registry-v1.26.sh
+```
+
+You should then see a `kind-control-plane` and `kind-registry` docker container:
+
+```bash
+$ docker ps
+59cdc7458ca4   kindest/node:v1.26.0                 "/usr/local/bin/entr…"   4 months ago   Up 2 weeks   127.0.0.1:41701->6443/tcp                        kind-control-plane
+633fcaaa7b17   registry:2                           "/entrypoint.sh /etc…"   4 months ago   Up 2 weeks   127.0.0.1:5001->5000/tcp                         kind-registry
+```
+
+By default, `kind` should have set a kubernetes context in your `KUBECONFIG`. We
+can verify that as such:
+
+```bash
+$ kubectl config get-contexts
+CURRENT   NAME                                                           CLUSTER                AUTHINFO                         NAMESPACE
+*         kind-kind                                                      kind-kind              kind-kind
+```
+
+By default, your `KUBECONFIG` is located at `~/.kube/config`. You can point
+it to a different file by changing the `KUBECONFIG` environment variable.
+
+> Important: this file is very sensitive!
+
+```bash
+$ less ~/.kube/config
+
+# Instead, opt for the following to obfuscate sensitive information
+$ kubectl config view
+```
+
+Next, let's verify that you can talk to the kube-apiserver:
+
+```bash
+$ kubectl version
+Client Version: v1.24.3
+Kustomize Version: v4.5.4
+Server Version: v1.26.0
+```
+
+> Note: your values might differ here, and that's okay. This is enough
+> for us to know if your client is communicating properly with the
+> kube-apiserver.
+
+Authentication to the kube-apiserver is done via certificates. Read more about
+[PKI infrastructure](https://en.wikipedia.org/wiki/Public_key_infrastructure),
+[Kubernetes Client Certificates and More](https://kubernetes.io/docs/reference/access-authn-authz/authentication/),
+and [KUBECONFIG](https://www.redhat.com/sysadmin/kubeconfig).
+This is different than logging in with a username and password. Our `kubectl`
+client simply presents a certificate that was signed by the Kubernetes
+Certificate Authority, and the API server can validate that. This is similar to
+how TLS certificates are validated.
+
+Now that we're authenticated, let's take a step back and continue with the
+workflow for deploying an application to Kubernetes.
+
+## Example CI Workflow
+
+With that being said, let's outline the steps / stages we will take to deploy
+our application:
+
+1. Build our `api` image
+2. Deploy it using Docker Compose
+3. Deploy it using Kubernetes
+
+We will not be using a CI in this lab--but if you were, you'd want
+to also trigger the test runners after deployments of each stage. At the end
+of the pipeline, you'd want to store pipeline artifacts (such as the docker
+image, test coverage results, etc.) and trigger your CD pipeline if you had one.
+Stages can typically run in parallel or in serial, and can run one or multiple
+commands per stage. It is common to have an entrypoint script
+per stage to kick off any provisioning and testing.
+
+We will only focus on the above items, but below is additional tasks that a
+CI pipeline for a Kubernetes application might do...
+
+1. Lint your Dockerfile ([hadolint](https://github.com/hadolint/hadolint))
+2. Scan your Docker images for vulnerabilities (read about [CVE](https://cve.mitre.org/), [CVSS](https://nvd.nist.gov/vuln-metrics/cvss) and tools such as [Trivy](https://hub.docker.com/r/aquasec/trivy/))
+3. Test your Docker Container Structure ([ContainerStructureTest](https://github.com/GoogleContainerTools/container-structure-test))
+4. Lint your Kubernetes Manifests ([kubeval](https://kubeval.instrumenta.dev/) and [kubesec](https://kubesec.io/))
+5. For OpenShift
+   1. Bundle Validation ([Scorecard](https://sdk.operatorframework.io/docs/testing-operators/scorecard/))
+   2. Bundle Certification ([OpenShift Preflight](https://github.com/redhat-openshift-ecosystem/openshift-preflight))
+
+## Building Our API Docker Image
+
+First, we need to build our API into a docker image. This needs to be
+a docker image that runs on its own. Recall that the [Dockerfile.dev](./api/Dockerfile.dev)
+file we wrote does not actually run our server. That is not ideal for CI or
+for production. So we need to create an image that will automatically start our
+server when the container starts.
+
+I've created a `bin/build` script in the root of this repo:
+
+```bash
+#!/bin/bash
+set -eo pipefail
+
+main(){
+  # TODO: you might have automation here to determine what tag to use for the
+  # docker image. This could parse a version from CHANGELOG and/or use the
+  # git sha (short). Typically a semver: https://semver.org/.
+  local image_registry
+  local image_repository
+  local image_name
+  local image_tag
+  local image_path
+
+  image_registry="localhost:5001"
+  # Not required, but it is a good practice to namespace your images.
+  image_repository="company" 
+  image_name="api"
+  image_tag="0.0.1"
+  # EX) localhost:5001/company/api:0.0.1
+  image_path="$image_registry/$image_repository/$image_name:$image_tag"
+
+  echo "Building image: $image_path..."
+  
+  pushd "api" || true
+    docker build -f Dockerfile -t "$image_path" .
+  popd || true
+}
+
+main "$@"
+```
+
+From the root of our repository, we run it:
+
+> Note: as with all newly created scripts your system, you may need to make
+> it executable: `chmod +x bin/build`.
+
+```
+$ ./bin/build-image
+```
+
+We can see that our image exists:
+
+```
+$ docker image ls
+REPOSITORY                  TAG     IMAGE ID       CREATED         SIZE
+localhost:5001/company/api  0.0.1   4b53b6221e4a   7 minutes ago   80.7MB
+```
+
+## Pushing our API Docker Image
+
+Now, it is time to push it to a Docker Registry. In this case, we are using KinD
+in our simulation. If you used the KinD script provided earlier, you can access
+access the image registry via `locahost:5001`. To push an image to a Docker
+Registry, the hostname (and optionally, port) must be included in the image
+path, which is why we've tagged the image as such:
+
+```
+localhost:5001/company/api
+```
+
+We also included a `company` as the first part of the URI path. This refers to
+the target repository. In Docker Hub, this would just be your username. This
+is effectively just a namespace, and is not required but recommended.
+
+The last part of the path in the URI is `api`. That is the name of our image.
+
+Finally, we have a `tag`, which is just the version in this case. Often times,
+the `latest` tag will be published at the same time as a new version. That is
+done by also tagging this image with just `latest`, and pushing it to the image
+registry. Meaning you can push the same image with multiple tags by simply
+pushing to it multiple times.
+
+Generally, you'll have a script to also push your docker images in a separate
+stage. It's possible you might want to do both the `build` and `push` operations
+in the same stage, that is entirely possible, but you'll typically first push
+to a registry for CI-use only, then if your images pass all of your testing,
+you'd publish it to a staging or production ready registry, and pass references
+to those to your CD release pipeline, which would update your gitops source of
+truth with the appropriate references.
+
+```bash
+$ ./bin/push-image
+Pushing image: localhost:5001/company/api:0.0.1...
+The push refers to repository [localhost:5001/company/api]
+# --- snip ---
+0.0.1: digest: sha256:d2bea2e7f2fbf539b53a76114cc872e13bb731a8e44fe8a4ee84b22206a93937 size: 1782
+```
+
+Once your image is in our registry, we can pull it immediately if we wanted to:
+
+```
+$ docker pull localhost:5001/company/api:0.0.1
+0.0.1: Pulling from company/api
+Digest: sha256:d2bea2e7f2fbf539b53a76114cc872e13bb731a8e44fe8a4ee84b22206a93937
+Status: Image is up to date for localhost:5001/company/api:0.0.1
+localhost:5001/company/api:0.0.1
+```
+
+### Run the Compose Environment
+
+Here, we will run our project using Docker Compose using the image we just
+built. In CI, we'd follow up with running tests. Since this is a REST API,
+we could use any test runner that is capable of sending HTTP requests. We
+would do all of our unit and most/all integration testing using `go test` in
+an earlier stage in the pipeline, not at this point.
+
+We've created the following file at `ci/compose/docker-compose.yml`.
+
+> Important: we are injecting the image tag via environment variable.
+
+> Note: we are using a different port mapping for this environment as compared
+> to the development environment!
+
+```
+version: "3.9"
+services:
+  api:
+    image: localhost:5001/company/api:${TAG}
+    ports:
+      - "8888:8080"
+    env_file: ../../.env
+    depends_on:
+      - db
+  db:
+    image: postgres:15.3
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: blogger
+```
+
+To start the environment, we created this script:
+
+```bash
+#!/bin/bash
+set -eo pipefail
+
+main(){
+  # TODO: when initializing this environment, we require the tag of the image
+  # to be used in this environment.
+  if [ -z "$TAG" ]; then
+    echo "FATAL: TAG must be set!" 
+  fi
+
+  docker compose -f docker-compose.yml up -d
+}
+
+main "$@"
+```
+
+> Important: how you obtain the TAG to be used at runtime is intentionally
+> left as an implementation detail. For now, we will pass it in manually, since
+> we are running these steps manually. In the real world, you might derive the
+> image path from a constant image registry, image name, and build / git sha
+> details.
+
+Now to run the script...
+
+```bash
+$ cd ci/compose
+$ TAG=0.0.1 ./test
+[+] Running 3/3
+ ⠿ Network compose_default  Created                                                                                                                                       0.0s
+ ⠿ Container compose-db-1   Started                                                                                                                                       0.3s
+ ⠿ Container compose-api-1  Started
+
+# verify containers are running (ctrl + c to exit)
+$ docker compose logs -f
+```
+
+Here, you can simulate an E2E test as follows. The implementation details
+and how you assert the test results are intentionally left up for
+implementation. It is common to use [Cucumber](https://cucumber.io/) in favor
+of gherkin syntax, but you could use any test runner of your liking.
+
+```bash
+# Create a blog
+$ curl -X POST http://localhost:8888/blogs/    -H 'Content-Type: application/json'    -d '{"title":"2023052601","body":"hello w
+orld!"}'
+{"ID":1,"CreatedAt":"2023-06-09T08:25:24.7112804Z","UpdatedAt":"2023-06-09T08:25:24.7112804Z","DeletedAt":null,"title":"2023052601","body":"hello world!"}
+
+# Get all blogs
+$ curl localhost:8888/blogs/
+[{"ID":1,"CreatedAt":"2023-06-09T08:25:24.71128Z","UpdatedAt":"2023-06-09T08:25:24.71128Z","DeletedAt":null,"title":"2023052601","body":"hello world!"}]
+```
+
+#### Cleanup
+
+This is intentionally left out as an implementation detail, so in order to
+destroy this environment, from the `ci/compose` directory, run the following
+command:
+
+```
+$ docker-compose down -v
+```
+
+### Run the Kubernetes Environment
+
+Now that we've tested our application at a 1:1 scale in our compose environment,
+perhaps we want to ensure that our application functions in Kubernetes.
+
+> OPINION: I don't recommend doing all of your E2E tests in Kubernetes unless
+> you are using a pipeline that is designed to assert application state and
+> cluster state natively. I recommend testing minimal happy paths and any
+> scalability or Kubernetes related functionality that could not be tested
+> reliably in a compose environment.
+>
+> See [Argo Ecosystem (Workflows for CI)](https://argoproj.github.io/),
+> and maybe [Jenkins X](https://jenkins-x.io/). Otherwise, you're relegated to
+> developing tooling to assert these things, and it can get ugly fast.
+
+The templates that we will deploy are under `ci/kubernetes`. I will not display
+their contents here. The API deployment will deploy 3 copies of our `api`.
+Similarly to how we injected the docker image tag into the `docker-compose.yml`
+via an environment variable, we would want to do something similar for the
+`api container` in the pod spec of our deployment file [ci/kubernetes/api-deployment.yml](./ci/kubernetes/api-deployment.yml).
+This can be done with something like [kustomize](https://github.com/kubernetes-sigs/kustomize),
+which is also baked into [kubectl](https://kubernetes.io/docs/tasks/tools/). Or
+you could simply use something like [sed](https://www.gnu.org/software/sed/manual/sed.html).
+
+If I'm being honest, in my usecases, `kustomize` still requires an initial
+template file in order for me to keep some details out of source control, but I
+could be using it wrong. If I were following `gitops` and wanted to persist
+those generated manifests, then using it makes more sense Kustomize does a lot
+of other munging of manifests which might be desired in a more complex
+deployment.
+
+> Note: using GNU sed (GNU/Linux Default) vs BSD sed (MacOS Default) do not
+> have the same syntax. You can use conditional logic to support both if your
+> use case is simple enough.
+
+We've created a file [ci/kubernetes/test](./ci/kubernetes/test) as such:
+
+```bash
+#!/bin/bash
+set -eo pipefail
+
+main(){
+  local template_file
+  local api_deployment_file
+
+  api_deployment_file="api-deployment.yml"
+  template_file="templates/$api_deployment_file"
+
+  # When initializing this environment, we require the tag of the image
+  # to be used in this environment.
+  if [ -z "$TAG" ]; then
+    echo "FATAL: TAG must be set!" 
+  fi
+
+  # Copy the source template and overwrite the api image tag
+  cat "$template_file" | sed "s/{{ TAG }}/$TAG/g" > "$api_deployment_file"
+
+  # Apply all files within this directory
+  kubectl apply -f .
+
+  # TODO: implement a test runner and assert functionality.
+}
+
+main "$@"
+```
+
+This takes the same `TAG` environment variable and injects it into the `api`
+deployment manifest (the only file that needs templating). It then applies
+that file output alongside all of the other static manifests to deploy the
+product in Kubernetes.
+
+> Remember: the context of the `kubectl` client used determines which cluster
+> and namespace a product is deployed to. If a namespace is not configured in
+> your context, then the `default` namespace (or the namespace defined in the
+> manifests) are used.
+
+Below, we run some commands to test the application from within the context of
+Kubernetes (as opposed to outside of Kubernetes, where you would either need
+to `kubectl port-forward` or configure an `ingress` route to allow traffic to
+be routed from outside of the cluster to your application within the cluster).
+The provided deployment incluldes my favorite networking multitool container.
+
+#### Testing the Kubernetes Deployment
+
+```bash
+SERVICE_NAME="api-service.default.svc.cluster.local"
+NETWORK_MULTITOOL_POD=$(kubectl get pod --selector=app=network-multitool --no-headers | awk '{print $1}')
+kubectl exec -it "$NETWORK_MULTITOOL_POD" -- curl -X POST http://$SERVICE_NAME/blogs/ -H 'Content-Type: application/json' -d '{"title":"my first blog","body":"red red red blue green green yellow yellow yellow yellow"}'
+kubectl exec -it "$NETWORK_MULTITOOL_POD" -- curl -X POST http://$SERVICE_NAME/blogs/ -H 'Content-Type: application/json' -d '{"title":"my second blog","body":"red blue green green"}'
+kubectl exec -it "$NETWORK_MULTITOOL_POD" -- curl "http://$SERVICE_NAME/blogs/"
+kubectl exec -it "$NETWORK_MULTITOOL_POD" -- curl "http://$SERVICE_NAME/blogs/1/words"
+kubectl exec -it "$NETWORK_MULTITOOL_POD" -- curl -X PUT -H 'Content-Type: application/json' "http://$SERVICE_NAME/blogs/1" -d '{"title":"my first blog","body":"is so so much shorter now"}'
+kubectl exec -it "$NETWORK_MULTITOOL_POD" -- curl "http://$SERVICE_NAME/blogs/"
+kubectl exec -it "$NETWORK_MULTITOOL_POD" -- curl -X DELETE "http://$SERVICE_NAME/blogs/1"
+kubectl exec -it "$NETWORK_MULTITOOL_POD" -- curl "http://$SERVICE_NAME/blogs/"
+```
+
+> NOTE: gorm will soft-delete records by default, so if you delete the record
+> and attempt to re-create the same record, you'll get a unique key violation
+> due to the constriant we set on the blog title field. You can ignore that
+> as an error.
+
+#### Debugging the Kubernetes Deployment
+
+Below are some commands you can use to determine if your deployment is healthy.
+We are using the `default` namespace, so we do not need to specify that here
+using the `-n|--namespace` argument.
+
+> Note: you will need to specify your own unique pod names to query them
+> using `kubectl` below.
+
+```bash
+$ kubectl get events
+# --- snip ---
+
+$ kubectl get deployment
+NAME                           READY   UP-TO-DATE   AVAILABLE   AGE
+api-deployment                 3/3     1            3           6d23h
+network-multitool-deployment   1/1     1            1           6d23h
+postgres-deployment            1/1     1            1           6d23h
+vault-agent-injector           1/1     1            1           124d
+
+$ kubectl describe deployment api-deployment
+# --- snip ---
+
+$ kubectl get pod
+NAME                                            READY   STATUS             RESTARTS       AGE
+api-deployment-69474fb7b6-gtdrv                 2/2     Running            0              15m
+api-deployment-69474fb7b6-ktqwl                 2/2     Running            0              15m
+api-deployment-69474fb7b6-nbct9                 2/2     Running            0              6d23h
+network-multitool-deployment-78746fdbb5-4vcc8   1/1     Running            0              6d23h
+postgres-deployment-576ffd9cc5-24dj9            1/1     Running            0              6d23h
+
+# Log the postgres container (default)
+$ kubectl logs api-deployment-69474fb7b6-gtdrv --follow
+
+# Log the api container
+$ kubectl logs api-deployment-69474fb7b6-gtdrv --container=api --follow
+```
+
+#### Cleanup
+
+This is intentionally left out as an implementation detail, so in order to
+destroy this environment, from the `ci/kubernetes` directory, run the following
+command:
+
+```
+$ kubectl delete -f .
+```
+
+## Analysis of Deployment Environments
+
+There are always topics that deserve more discussion. Here are a handful so far:
+
+1. Maintaining Secrets in CI
+ 
+    How does one manage credentials in our CI pipeline? In this case, one
+    stand-out value might be the postgresl connection string stored in the
+    `POSTGRESQL_URL` environment variable. It might be valid to hard-code this
+    in CI, but what if this were an API key to some third party service? How do
+    we secure this without commiting it to source?
+
+    Most CI SaaS have a way for you save secrets on their servers that their
+    CI runners can use. That isn't ideal for many reasons, not to mention they
+    are targets for [hacks](https://thehackernews.com/2022/06/unpatched-travis-ci-api-bug-exposes.html).
+    There do exist Secrets Management tools such as [Conjur](https://docs.conjur.org/Latest/en/Content/Overview/Conjur-OSS-Suite-Overview.html),
+    which can be used to prevent these secrets from leaving your control.
+    However, you're likely most secure if you have your own CI/CD pipeline
+    in conjunction with your own secrets manager within your own network
+    boundary.
+
+1. Cleanup in CI
+
+    When deploying these environments in your CI environment, especially in
+    Kubernetes without a CI pipeline that natively supports CI
+    (vanilla Jenkins), you risk littering resources if your scripts do not
+    delete resources that they were responsible for. The cleanup was
+    intentionally left out of the provided automation scripts as an
+    implementation detail for you to consider.
+
+1. Spaghetti and Glue Code
+
+    You can see that the amount of glue code and shell scripts can sprial out
+    of control very easily if not controlled well, especially as we introduce
+    new forms of linting, scanning, templating, testing, etc. to the repository.
+    My only advice to this is, if your logic is getting really complicated,
+    develop a necessary tooling / CLI in-house. Otherwise, keep your scripts
+    and their dependencies as organized as possible. I personally like to have
+    "actions" as obvious and high level, existing at the file system level
+    so I don't have to jump too deep into scripts. Keep indirection in your
+    scripts to a minimum where possible, so that the scripts are easier to
+    follow.
+
+    It can help to document (visually or otherwise) complex workflows that
+    are relevant for your pipeline process. However, documentation can become
+    stale really fast, so be sure to regularly assess and verify such
+    documentation.
+
+1. Please be wary of E2E testing, especially in Kubernetes
+
+    As your project grows, it might be natural to want to do most of your
+    testing at the E2E level. After all, I want to ensure that the end-user's
+    experience is 100% covered, right? This is very expensive in time and in
+    costs, so cover as many cases as you can at lower unit and integration
+    levels before writing an E2E test. This means that you should test smaller
+    units, and compose and test them with higher level modules. This does not
+    mean to combine unit tests literally, but to compose and test them as an
+    integration between components/services that were previously mocked out.
+    
+    As you test at a higher level, your concern should be that the components
+    work together, not that a particular path works with a specific permutation
+    of parameters.
+
+# What's Next?
+
+Now that you've a through hands-on and a relatively opinionated understanding of
+what it means to write container-native and Kubernetes-native code, you should
+continue building upon this experience by building your own applications.
+
+I recommend that you continue building applications on your own time. A good
+start would be to experiment with a Secrets Manager such as
+[Conjur OSS in Kubernetes](https://github.com/codihuston/conjur-oss-helm-example),
+and delegating secrets to your Kubernetes workloads.
+
+I also recommend that you consider experimenting with include adding several
+services to your application, like [redis](https://redis.io/) for caching,
+[rabbitmq](https://www.rabbitmq.com/) for event-driven systems, other types of
+databases like [cassandra](https://cassandra.apache.org/_/index.html) or
+[mongodb](https://www.mongodb.com/). Consider adding a worker queue, a
+REST API, and maybe even an authentication layer (in said API or on its own,
+see [OAuth](https://oauth.net/) and [OIDC](https://auth0.com/docs/authenticate/protocols/openid-connect-protocol#:~:text=What%20is%20OpenID%20Connect%20(OIDC,obtain%20basic%20user%20profile%20information.)).
+Implement RBAC on your own, or using [Open Policy Agent](https://www.openpolicyagent.org/).
+Each of these have their own usecases, so be sure to look into those. This
+will give you hands on experience with how systems communicate with one another,
+and working with microservices at a larger scale in general.
+
+Experiment with developing on that application in Docker Compose, and deploying
+it into Kubernetes. Consider using [GCP GKE](https://cloud.google.com/kubernetes-engine), [AWS EKS](https://aws.amazon.com/eks/), or [Azure AKS](https://azure.microsoft.com/en-us/products/kubernetes-servicehttps://azure.microsoft.com/en-us/products/kubernetes-service)
+in a CI/CD pipeline of your own, or using a public SaaS CI/CD. Definitely
+experiment with the `LoadBalancer` type of Kubernetes `Service` in those cloud
+environments, and how you might expose your Kubernetes application to the
+public internet (or your own Virtual Private Network in your cloud platform).
+
+Once you have a handle on how to build and deploy Kubernetes-native
+applications, it's time to graduate to Kubernetes Operator Development.
+
+### Other Points of Interest
+
+While not entirely related to Kubernetes and Docker, you may also consider
+building applications on [serverless compute](https://aws.amazon.com/serverless/).
+This can be an option for small services that might need to scale on the fly,
+but don't require its own entire architecture to be deployed.
+
+I would also recommend that you learn how to understand your product. You can
+do this expanding the testing to cover peformance testing using tools like JMeter or K6.
+I suggest taking it further and experimenting with a mix of [Chaos Engineering](https://principlesofchaos.org/)
+(like [Chaos Monkey](https://netflix.github.io/chaosmonkey/) or [Chaos Mesh](https://chaos-mesh.org/docs/basic-features/),
+or roll your own with your own intimate product knowledge).
+
+## Kubernetes Operator Development
+
+As we discussed, one of the things Kubernetes is designed to solve is scaling
+architecture. With this giant state machine that is capable of reconciling
+properties and self-healing, we've unlocked the ability to automate the
+application lifecycle beyond simply deployment. Operators takes us from
+[Day 0 Ops to Day 1, 2, and beyond](https://codilime.com/blog/day-0-day-1-day-2-the-software-lifecycle-in-the-cloud-age/).
+
+If you are working in enterprise software, you might have a more obvious reason
+to develop a Kubernetes operator. If you are developing a simple REST API with
+a simple architecture, it might not be obvious why you might want an operator
+at first. When you factor in Day 0 Ops, we consider mostly the installation
+experience. However, when you start to factor in Day 1 and 2 Ops, we consider
+mostly the management and upkeep of the product. This includes things like
+log management, database backups, migration of data, etc.
+
+A Kubernetes operator is simply an operator--someone who is responsible for
+the upkeep of an application--but coded by someone who knows
+how to operate the product ;). However, that line is very thin,
+because developers are not often system administrators, infrastructure
+engineers. Developers are also often not the people who are using the product
+on a day-to-day-basis. So the challenge is knowing what to implement, and how to
+do it in a way that *gives the people who do know what they are doing* the
+ability to configure and prepare and execute the automation that makes their
+lives easier. This is where collaboration between Product Management, Product
+Owners, and the daily users of the product is significant when it comes to
+developing an operator.
+
+Thankfully, developing on the operator isn't terribly difficult when it comes
+to maintaining that your operator creates and maintains the appropraite
+Kubernetes resources (primitives, in addition to your own). However, that
+complexity rises as you begin introducing logic for lifecycle management. This
+can become difficult to test from the context of a Kubernetes cluster, so
+prepare to find or create tooling to make it easier to assert the end-to-end
+behavior of your operator.
+
+### Resources on Operator Development
+
+1. [Operator SDK (scaffolding)](https://sdk.operatorframework.io/)
+2. [Golang Tutorial](https://sdk.operatorframework.io/docs/building-operators/golang/tutorial/)
+3. [Operator Lifecycle Manager](https://sdk.operatorframework.io/docs/olm-integration/)
+4. [OpenShift Container Platform](https://www.redhat.com/en/technologies/cloud-computing/openshift/container-platform) (Note: you can install OLM on Kubernetes)
+
+### High Level Complexities of an Operator
+
+An operator might be responsible for orchestrating multiple services, each
+of which may have varying numbers of containers and configurations for each.
+Here are some of the most complex things that stood out to me after developing
+on an Operator project:
+
+1. Codebase Maintenance
+
+   You may opt to have all of the containers and their codebases in the same
+   repository as your operator (or not). Either has their implications. If
+   you choose to separate, then your operator pipeline must be aware of which
+   version of the product to test (perhaps a nightly build)? If combined
+   together, the codebase can become exceedingly large and confusing because
+   so many environments exist regarding development and testing.
+
+   I throughly recommend that you do not develop in Kubernetes, and only develop
+   in a docker compose environment. If your product works in docker compose,
+   it should work at that scale in Kubernetes. You can then add Kubernetes
+   specific tests as needed.
+
+2. CI/CD Pipeline
+
+   An operator installs a cluster-scoped resource, known as a
+   [CustomResourceDefinition](https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/#:~:text=The%20CustomResourceDefinition%20API%20resource%20allows,a%20valid%20DNS%20subdomain%20name.)
+   for each resource that your operator introduces. If you are installing the operator via OLM,
+   that is expanded to include the [ClusterServiceVersion](https://olm.operatorframework.io/docs/concepts/crds/clusterserviceversion/).
+   This means that installing multiple instances your operator on a single
+   cluster could collide with each other. If two developers are using the same
+   version of the CRDs in a shared cluster, or in the CI cluster, but the
+   specs are different, there could be unexpected collision.
+
+   Also, if an operator is cluser-scoped (default), both instances could end
+   up racing to reconcile a `CustomResource`, which might lead to some
+   ugly behviour.
+
+   Red Hat's recommendation is to use single-node clusters.
+
+   You might be able to get away with using the [namespace scope feature](https://sdk.operatorframework.io/docs/building-operators/golang/operator-scope/)
+   in an operator, but the previous point still stands.
+
+3. Certification with Red Hat
+
+   If you partner with Red Hat, there are a lot of intricacies in integrating
+   with their ecosystem. For example, [kubebuilder](https://github.com/kubernetes-sigs/kubebuilder) and OLM [api markers](https://sdk.operatorframework.io/docs/building-operators/golang/references/markers/) / [x-descriptors](https://github.com/openshift/console/blob/master/frontend/packages/operator-lifecycle-manager/src/components/descriptors/reference/reference.md)
+   for integrating with the OpenShift Web Console, and the [certification troubleshooting guide](https://github.com/redhat-openshift-ecosystem/certification-releases/blob/main/4.9/ga/troubleshooting.md).
+   There is also some nuance to submitting certification scan results to
+   Red Hat using [OpenShift Preflight](https://github.com/redhat-openshift-ecosystem/openshift-preflight).
+
+4. Producing Installation Artifacts
+
+   Out-of-box, if you use the SDK, you'll be given a means to generate an
+   OLM Bundle, Helm Charts, or plain Kubernetes manifests. Each of these has
+   their own nuances, but you have the power to use whichever you want, but
+   keeping these organized can be difficult.
+
+   > Note: An OLM Bundle cannot be installed by applying manifests directly,
+   > the operator must be installed via a CatalogSource, which contains the
+   > bundle for the operator you're building.
